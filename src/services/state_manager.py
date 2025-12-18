@@ -1,9 +1,12 @@
 """State management service for the IPTV player."""
 import json
 from pathlib import Path
-from typing import List, Optional, Set, Callable
+from typing import List, Optional, Set, Callable, TYPE_CHECKING
 from ..models.channel import Channel
 from ..models.playlist import Playlist
+
+if TYPE_CHECKING:
+    from .xtream_client import XtreamCredentials
 
 
 class StateManager:
@@ -21,6 +24,7 @@ class StateManager:
         self._favorites_file = self.data_dir / "favorites.json"
         self._playlists_file = self.data_dir / "playlists.json"
         self._settings_file = self.data_dir / "settings.json"
+        self._xtream_file = self.data_dir / "xtream.json"
         self._channels_cache_dir = self.data_dir / "cache"
         self._channels_cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -29,6 +33,7 @@ class StateManager:
         self._favorites: Set[str] = set()  # Set of channel URLs
         self._current_channel: Optional[Channel] = None
         self._settings: dict = {}
+        self._xtream_providers: List[dict] = []  # List of Xtream Codes credentials
         
         # Callbacks
         self._on_playlist_change: List[Callable] = []
@@ -65,6 +70,9 @@ class StateManager:
                         self._playlists.append(playlist)
             except Exception:
                 pass
+        
+        # Load Xtream Codes providers
+        self._load_xtream_providers()
     
     def _load_playlist_from_cache(self, p_data: dict) -> Optional[Playlist]:
         """Load a playlist from cache."""
@@ -255,3 +263,45 @@ class StateManager:
         """Notify all channel change callbacks."""
         for callback in self._on_channel_change:
             callback()
+    
+    # Xtream Codes Provider Management
+    def _load_xtream_providers(self):
+        """Load Xtream Codes providers from file."""
+        if self._xtream_file.exists():
+            try:
+                data = json.loads(self._xtream_file.read_text())
+                self._xtream_providers = data.get("providers", [])
+            except Exception:
+                self._xtream_providers = []
+    
+    def _save_xtream_providers(self):
+        """Save Xtream Codes providers to file."""
+        data = {"providers": self._xtream_providers}
+        self._xtream_file.write_text(json.dumps(data, indent=2))
+    
+    def add_xtream_provider(self, credentials: "XtreamCredentials"):
+        """Add an Xtream Codes provider."""
+        # Check if provider already exists (by server+username)
+        for provider in self._xtream_providers:
+            if provider.get("server") == credentials.server and provider.get("username") == credentials.username:
+                # Update existing
+                provider.update(credentials.to_dict())
+                self._save_xtream_providers()
+                return
+        
+        self._xtream_providers.append(credentials.to_dict())
+        self._save_xtream_providers()
+        self._notify_playlist_change()
+    
+    def remove_xtream_provider(self, server: str, username: str):
+        """Remove an Xtream Codes provider."""
+        self._xtream_providers = [
+            p for p in self._xtream_providers
+            if not (p.get("server") == server and p.get("username") == username)
+        ]
+        self._save_xtream_providers()
+        self._notify_playlist_change()
+    
+    def get_xtream_providers(self) -> List[dict]:
+        """Get all Xtream Codes providers."""
+        return self._xtream_providers.copy()

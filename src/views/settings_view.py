@@ -4,6 +4,7 @@ import asyncio
 from typing import Optional, Callable
 from ..services.state_manager import StateManager
 from ..services.m3u_parser import M3UParser
+from ..services.xtream_client import XtreamCodesClient, XtreamCredentials
 
 
 class SettingsView(ft.Container):
@@ -243,6 +244,117 @@ class SettingsView(ft.Container):
             expand=True,
         )
         
+        # Xtream Codes section
+        self._xtream_server_field = ft.TextField(
+            label="Server URL",
+            hint_text="http://example.com:8080",
+            prefix_icon=ft.Icons.DNS_ROUNDED,
+            border_radius=12,
+            border_color=ft.Colors.WHITE24,
+            focused_border_color=ft.Colors.BLUE_400,
+            label_style=ft.TextStyle(color=ft.Colors.WHITE70),
+            text_style=ft.TextStyle(color=ft.Colors.WHITE),
+            expand=True,
+        )
+        
+        self._xtream_username_field = ft.TextField(
+            label="Username",
+            prefix_icon=ft.Icons.PERSON_ROUNDED,
+            border_radius=12,
+            border_color=ft.Colors.WHITE24,
+            focused_border_color=ft.Colors.BLUE_400,
+            label_style=ft.TextStyle(color=ft.Colors.WHITE70),
+            text_style=ft.TextStyle(color=ft.Colors.WHITE),
+            expand=True,
+        )
+        
+        self._xtream_password_field = ft.TextField(
+            label="Password",
+            prefix_icon=ft.Icons.LOCK_ROUNDED,
+            password=True,
+            can_reveal_password=True,
+            border_radius=12,
+            border_color=ft.Colors.WHITE24,
+            focused_border_color=ft.Colors.BLUE_400,
+            label_style=ft.TextStyle(color=ft.Colors.WHITE70),
+            text_style=ft.TextStyle(color=ft.Colors.WHITE),
+            expand=True,
+        )
+        
+        self._xtream_status_text = ft.Text(
+            "",
+            color=ft.Colors.WHITE70,
+            size=12,
+        )
+        
+        self._xtream_provider_list = ft.ListView(
+            spacing=8,
+            padding=ft.padding.symmetric(vertical=8),
+            height=150,
+        )
+        self._update_xtream_provider_list()
+        
+        xtream_section = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.LIVE_TV_ROUNDED, color=ft.Colors.BLUE_400, size=24),
+                            ft.Text(
+                                "Xtream Codes Provider",
+                                size=16,
+                                weight=ft.FontWeight.W_600,
+                                color=ft.Colors.WHITE,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    ft.Container(height=12),
+                    self._xtream_server_field,
+                    ft.Row(
+                        [
+                            self._xtream_username_field,
+                            self._xtream_password_field,
+                        ],
+                        spacing=12,
+                    ),
+                    ft.Container(height=8),
+                    ft.Row(
+                        [
+                            ft.OutlinedButton(
+                                text="Test Connection",
+                                icon=ft.Icons.WIFI_TETHERING_ROUNDED,
+                                style=ft.ButtonStyle(
+                                    color=ft.Colors.WHITE70,
+                                    side=ft.BorderSide(1, ft.Colors.WHITE24),
+                                ),
+                                on_click=self._test_xtream_connection,
+                            ),
+                            ft.ElevatedButton(
+                                text="Add Provider",
+                                icon=ft.Icons.ADD_ROUNDED,
+                                bgcolor=ft.Colors.BLUE_700,
+                                color=ft.Colors.WHITE,
+                                on_click=self._add_xtream_provider,
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                    self._xtream_status_text,
+                    ft.Container(height=8),
+                    ft.Text(
+                        "Saved Providers:",
+                        size=12,
+                        color=ft.Colors.WHITE54,
+                    ),
+                    self._xtream_provider_list,
+                ],
+            ),
+            padding=ft.padding.all(20),
+            border_radius=16,
+            bgcolor=ft.Colors.with_opacity(0.3, ft.Colors.BLACK),
+        )
+        
         self.content = ft.Column(
             [
                 header,
@@ -251,6 +363,7 @@ class SettingsView(ft.Container):
                         [
                             add_url_section,
                             add_file_section,
+                            xtream_section,
                             playlists_section,
                         ],
                         spacing=16,
@@ -492,5 +605,236 @@ class SettingsView(ft.Container):
         
         self._state.remove_playlist(playlist)
         self._update_playlist_list()
+        if self.page:
+            self.page.update()
+    
+    # Xtream Codes Methods
+    def _update_xtream_provider_list(self):
+        """Update the Xtream Codes provider list display."""
+        self._xtream_provider_list.controls.clear()
+        
+        providers = self._state.get_xtream_providers()
+        
+        if not providers:
+            self._xtream_provider_list.controls.append(
+                ft.Container(
+                    content=ft.Text(
+                        "No Xtream providers added yet",
+                        color=ft.Colors.WHITE30,
+                        size=12,
+                    ),
+                    alignment=ft.alignment.center,
+                    padding=ft.padding.all(16),
+                )
+            )
+        else:
+            for provider in providers:
+                self._xtream_provider_list.controls.append(
+                    self._build_xtream_provider_tile(provider)
+                )
+    
+    def _build_xtream_provider_tile(self, provider: dict) -> ft.Control:
+        """Build a provider list tile."""
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(
+                        ft.Icons.LIVE_TV_ROUNDED,
+                        color=ft.Colors.BLUE_400,
+                        size=24,
+                    ),
+                    ft.Container(width=8),
+                    ft.Column(
+                        [
+                            ft.Text(
+                                provider.get("name", "Xtream Provider"),
+                                size=13,
+                                weight=ft.FontWeight.W_500,
+                                color=ft.Colors.WHITE,
+                            ),
+                            ft.Text(
+                                f"{provider.get('server', '')} • {provider.get('username', '')}",
+                                size=11,
+                                color=ft.Colors.WHITE54,
+                            ),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.REFRESH_ROUNDED,
+                        icon_color=ft.Colors.BLUE_300,
+                        tooltip="Refresh channels",
+                        on_click=lambda e, p=provider: self.page.run_task(
+                            self._refresh_xtream_channels, p
+                        ),
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        icon_color=ft.Colors.RED_300,
+                        tooltip="Remove provider",
+                        on_click=lambda e, p=provider: self._remove_xtream_provider(p),
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            border_radius=10,
+            bgcolor=ft.Colors.with_opacity(0.2, ft.Colors.WHITE),
+        )
+    
+    async def _test_xtream_connection(self, e):
+        """Test Xtream Codes connection."""
+        server = self._xtream_server_field.value.strip()
+        username = self._xtream_username_field.value.strip()
+        password = self._xtream_password_field.value.strip()
+        
+        if not server or not username or not password:
+            self._xtream_status_text.value = "Please fill in all fields"
+            self._xtream_status_text.color = ft.Colors.RED_300
+            if self.page:
+                self.page.update()
+            return
+        
+        self._xtream_status_text.value = "Testing connection..."
+        self._xtream_status_text.color = ft.Colors.WHITE70
+        if self.page:
+            self.page.update()
+        
+        try:
+            credentials = XtreamCredentials(
+                name=f"Test ({username})",
+                server=server,
+                username=username,
+                password=password,
+            )
+            client = XtreamCodesClient(credentials)
+            account_info = await client.authenticate()
+            
+            self._xtream_status_text.value = (
+                f"✓ Connected! Status: {account_info.status}, "
+                f"Max connections: {account_info.max_connections}"
+            )
+            self._xtream_status_text.color = ft.Colors.GREEN_300
+            
+        except Exception as ex:
+            self._xtream_status_text.value = f"Connection failed: {str(ex)}"
+            self._xtream_status_text.color = ft.Colors.RED_300
+        
+        if self.page:
+            self.page.update()
+    
+    async def _add_xtream_provider(self, e):
+        """Add Xtream Codes provider and load channels."""
+        server = self._xtream_server_field.value.strip()
+        username = self._xtream_username_field.value.strip()
+        password = self._xtream_password_field.value.strip()
+        
+        if not server or not username or not password:
+            self._xtream_status_text.value = "Please fill in all fields"
+            self._xtream_status_text.color = ft.Colors.RED_300
+            if self.page:
+                self.page.update()
+            return
+        
+        self._xtream_status_text.value = "Adding provider and loading channels..."
+        self._xtream_status_text.color = ft.Colors.WHITE70
+        if self.page:
+            self.page.update()
+        
+        try:
+            credentials = XtreamCredentials(
+                name=f"Xtream ({username})",
+                server=server,
+                username=username,
+                password=password,
+            )
+            client = XtreamCodesClient(credentials)
+            
+            # Test connection first
+            account_info = await client.authenticate()
+            
+            # Save credentials
+            self._state.add_xtream_provider(credentials)
+            
+            # Load live channels
+            channels = await client.get_live_streams()
+            
+            # Create a playlist from the channels
+            from ..models.playlist import Playlist
+            playlist = Playlist(
+                name=f"Xtream: {username}",
+                source=f"xtream://{server}",
+                channels=channels,
+            )
+            self._state.add_playlist(playlist)
+            
+            # Clear fields
+            self._xtream_server_field.value = ""
+            self._xtream_username_field.value = ""
+            self._xtream_password_field.value = ""
+            
+            self._xtream_status_text.value = f"✓ Added {len(channels)} channels from {username}"
+            self._xtream_status_text.color = ft.Colors.GREEN_300
+            
+            self._update_xtream_provider_list()
+            self._update_playlist_list()
+            
+        except Exception as ex:
+            self._xtream_status_text.value = f"Error: {str(ex)}"
+            self._xtream_status_text.color = ft.Colors.RED_300
+        
+        if self.page:
+            self.page.update()
+    
+    async def _refresh_xtream_channels(self, provider: dict):
+        """Refresh channels from an Xtream provider."""
+        try:
+            credentials = XtreamCredentials.from_dict(provider)
+            client = XtreamCodesClient(credentials)
+            
+            channels = await client.get_live_streams()
+            
+            # Find and update the playlist
+            from ..models.playlist import Playlist
+            playlist = Playlist(
+                name=f"Xtream: {credentials.username}",
+                source=f"xtream://{credentials.server}",
+                channels=channels,
+            )
+            
+            # Remove old playlist with same source
+            for p in self._state.get_playlists():
+                if p.source == playlist.source:
+                    self._state.remove_playlist(p)
+                    break
+            
+            self._state.add_playlist(playlist)
+            self._update_playlist_list()
+            
+            if self.page:
+                self.page.update()
+                
+        except Exception:
+            pass  # Silent fail for refresh
+    
+    def _remove_xtream_provider(self, provider: dict):
+        """Remove an Xtream provider."""
+        server = provider.get("server", "")
+        username = provider.get("username", "")
+        
+        self._state.remove_xtream_provider(server, username)
+        
+        # Also remove associated playlist
+        source = f"xtream://{server}"
+        for p in self._state.get_playlists():
+            if p.source == source:
+                self._state.remove_playlist(p)
+                break
+        
+        self._update_xtream_provider_list()
+        self._update_playlist_list()
+        
         if self.page:
             self.page.update()

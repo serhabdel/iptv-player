@@ -1,0 +1,220 @@
+name: Build IPTV Player
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller iptv-player.spec
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-player-windows
+          path: dist/iptv-player.exe
+
+  build-linux-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build binary with PyInstaller
+        run: pyinstaller --onefile --noconsole --name iptv-player main.py
+
+      - name: Create Debian package structure
+        run: |
+          mkdir -p deb_package/DEBIAN
+          mkdir -p deb_package/usr/bin
+          mkdir -p deb_package/usr/share/applications
+          mkdir -p deb_package/usr/share/icons/hicolor/256x256/apps
+          
+          cp dist/iptv-player deb_package/usr/bin/
+          chmod +x deb_package/usr/bin/iptv-player
+          
+          cp assets/logo.png deb_package/usr/share/icons/hicolor/256x256/apps/iptv-player.png
+          
+          cat > deb_package/DEBIAN/control << EOF
+          Package: iptv-player
+          Version: ${GITHUB_REF_NAME:-1.0.0}
+          Section: video
+          Priority: optional
+          Architecture: amd64
+          Maintainer: IPTV Player <iptv-player@example.com>
+          Description: Cross-platform IPTV Player
+           A modern IPTV player built with Python and Flet.
+           Supports M3U playlists and Xtream Codes API.
+          EOF
+          
+          cat > deb_package/usr/share/applications/iptv-player.desktop << EOF
+          [Desktop Entry]
+          Name=IPTV Player
+          Comment=Cross-platform IPTV Player
+          Exec=/usr/bin/iptv-player
+          Icon=iptv-player
+          Terminal=false
+          Type=Application
+          Categories=AudioVideo;Video;Player;
+          EOF
+          
+          dpkg-deb --build deb_package iptv-player.deb
+
+      - name: Upload Debian artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-player-linux-deb
+          path: iptv-player.deb
+
+  build-linux-appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build binary with PyInstaller
+        run: pyinstaller --onefile --noconsole --name iptv-player main.py
+
+      - name: Create AppImage
+        run: |
+          # Download appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          cp dist/iptv-player AppDir/usr/bin/
+          chmod +x AppDir/usr/bin/iptv-player
+          cp assets/logo.png AppDir/usr/share/icons/hicolor/256x256/apps/iptv-player.png
+          cp assets/logo.png AppDir/iptv-player.png
+          
+          cat > AppDir/iptv-player.desktop << EOF
+          [Desktop Entry]
+          Name=IPTV Player
+          Comment=Cross-platform IPTV Player
+          Exec=iptv-player
+          Icon=iptv-player
+          Terminal=false
+          Type=Application
+          Categories=AudioVideo;Video;Player;
+          EOF
+          
+          cat > AppDir/AppRun << 'APPRUN'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/iptv-player" "$@"
+          APPRUN
+          chmod +x AppDir/AppRun
+          
+          # Build AppImage
+          ./appimagetool-x86_64.AppImage AppDir IPTV-Player-x86_64.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-player-linux-appimage
+          path: IPTV-Player-x86_64.AppImage
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name "IPTV Player" --icon assets/logo.png main.py
+          
+          # Create DMG for easier distribution
+          mkdir -p dmg_contents
+          cp -r "dist/IPTV Player.app" dmg_contents/ 2>/dev/null || cp dist/"IPTV Player" dmg_contents/
+          hdiutil create -volname "IPTV Player" -srcfolder dmg_contents -ov -format UDZO IPTV-Player.dmg
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-player-macos
+          path: IPTV-Player.dmg
+
+  release:
+    needs: [build-windows, build-linux-deb, build-linux-appimage, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/iptv-player-windows/iptv-player.exe
+            artifacts/iptv-player-linux-deb/iptv-player.deb
+            artifacts/iptv-player-linux-appimage/IPTV-Player-x86_64.AppImage
+            artifacts/iptv-player-macos/IPTV-Player.dmg
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
