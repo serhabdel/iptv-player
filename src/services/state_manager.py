@@ -163,25 +163,28 @@ class StateManager:
         """Get all playlists."""
         return self._playlists
     
-    def get_all_channels(self) -> List[Channel]:
-        """Get all channels from all playlists."""
+    def get_all_channels(self, playlist_filter: Optional[str] = None) -> List[Channel]:
+        """Get all channels, optionally filtered by playlist name."""
         channels = []
         for playlist in self._playlists:
-            channels.extend(playlist.channels)
+            if playlist_filter is None or playlist_filter == "All Playlists" or playlist.name == playlist_filter:
+                channels.extend(playlist.channels)
         return channels
     
-    def get_all_groups(self) -> List[str]:
-        """Get all unique groups from all playlists."""
+    def get_all_groups(self, playlist_filter: Optional[str] = None) -> List[str]:
+        """Get all unique groups, optionally filtered by playlist name."""
         groups = set()
         for playlist in self._playlists:
-            groups.update(playlist.get_groups())
+            if playlist_filter is None or playlist_filter == "All Playlists" or playlist.name == playlist_filter:
+                groups.update(playlist.get_groups())
         return sorted(list(groups))
     
-    def get_channels_by_group(self, group: str) -> List[Channel]:
-        """Get all channels in a group across all playlists."""
+    def get_channels_by_group(self, group: str, playlist_filter: Optional[str] = None) -> List[Channel]:
+        """Get all channels in a group, optionally filtered by playlist."""
         channels = []
         for playlist in self._playlists:
-            channels.extend(playlist.get_channels_by_group(group))
+            if playlist_filter is None or playlist_filter == "All Playlists" or playlist.name == playlist_filter:
+                channels.extend(playlist.get_channels_by_group(group))
         return channels
     
     def search_channels(self, query: str) -> List[Channel]:

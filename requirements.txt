@@ -2,3 +2,5 @@ flet>=0.25.0
 flet-video
 httpx
 aiofiles
+async-upnp-client
+aiohttp
