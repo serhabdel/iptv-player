@@ -7,6 +7,7 @@ from typing import Optional, Callable, List
 from ..models.channel import Channel
 from ..services.dlna_client import DLNACastService, DLNADevice
 from ..services.stream_proxy import get_stream_proxy
+from .track_selector import TrackSelector
 
 
 class VideoPlayerComponent(ft.Column):
@@ -34,6 +35,12 @@ class VideoPlayerComponent(ft.Column):
         self._stream_proxy = get_stream_proxy()
         self._overlay_container: Optional[ft.Container] = None
         
+        # Track selection state
+        self._audio_tracks: List[dict] = []
+        self._subtitle_tracks: List[dict] = []
+        self._current_audio_track: int = 0
+        self._current_subtitle_track: int = -1  # -1 = off
+        
         self._build_ui()
     
     def set_overlay_container(self, container: ft.Container):
@@ -54,6 +61,7 @@ class VideoPlayerComponent(ft.Column):
             fit=ft.ImageFit.CONTAIN,
             on_loaded=self._on_video_loaded,
             on_error=self._on_video_error,
+            on_track_changed=self._on_track_changed,
         )
         
         self._channel_info = ft.Text(
@@ -132,6 +140,24 @@ class VideoPlayerComponent(ft.Column):
             on_click=self._stop_casting_btn,
         )
         
+        # Audio track button
+        self._audio_btn = ft.IconButton(
+            icon=ft.Icons.AUDIOTRACK_ROUNDED,
+            icon_color=ft.Colors.WHITE70,
+            icon_size=22,
+            tooltip="Audio tracks (A)",
+            on_click=self._show_audio_selector,
+        )
+        
+        # Subtitle button
+        self._subtitle_btn = ft.IconButton(
+            icon=ft.Icons.SUBTITLES_ROUNDED,
+            icon_color=ft.Colors.WHITE70,
+            icon_size=22,
+            tooltip="Subtitles (S)",
+            on_click=self._show_subtitle_selector,
+        )
+        
         # Now playing bar with volume controls
         self._now_playing_bar = ft.Container(
             content=ft.Row(
@@ -162,6 +188,8 @@ class VideoPlayerComponent(ft.Column):
                     ),
                     ft.Container(width=8),
                     self._fullscreen_btn,
+                    self._audio_btn,
+                    self._subtitle_btn,
                     self._cast_btn,
                     self._mini_stop_btn,
                 ],
@@ -170,6 +198,33 @@ class VideoPlayerComponent(ft.Column):
             padding=ft.padding.symmetric(horizontal=16, vertical=8),
             bgcolor="#1a1a2e",
             border_radius=10,
+            visible=False,
+        )
+        
+        # Loading indicator
+        self._loading_indicator = ft.Container(
+            content=ft.Column(
+                [
+                    ft.ProgressRing(
+                        width=60,
+                        height=60,
+                        stroke_width=4,
+                        color=ft.Colors.PURPLE_400,
+                    ),
+                    ft.Container(height=16),
+                    ft.Text(
+                        "Loading stream...",
+                        color=ft.Colors.WHITE70,
+                        size=14,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            alignment=ft.alignment.center,
+            expand=True,
+            bgcolor="#0a0a12",
+            border_radius=16,
             visible=False,
         )
         
@@ -255,10 +310,12 @@ class VideoPlayerComponent(ft.Column):
             self._now_playing_bar,
             ft.Container(height=8),
             self._welcome,
+            self._loading_indicator,
             self._video_container,
         ]
         self.expand = True
         self.spacing = 0
+        self.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     
     def _on_volume_change(self, e):
         """Handle app volume change."""
@@ -291,24 +348,25 @@ class VideoPlayerComponent(ft.Column):
             self._boost_text.value = "🔊"
             self._boost_text.color = ft.Colors.WHITE54
         
-        # Apply system boost using wpctl
-        try:
-            volume_factor = boost / 100.0
-            subprocess.run(
-                ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", str(volume_factor)],
-                capture_output=True,
-                timeout=2
-            )
-        except Exception:
-            # wpctl not available, try pactl
+        # Apply system boost using wpctl (Linux only)
+        if self.page and self.page.platform == ft.PagePlatform.LINUX:
             try:
+                volume_factor = boost / 100.0
                 subprocess.run(
-                    ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{boost}%"],
+                    ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", str(volume_factor)],
                     capture_output=True,
                     timeout=2
                 )
             except Exception:
-                pass
+                # wpctl not available, try pactl
+                try:
+                    subprocess.run(
+                        ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{boost}%"],
+                        capture_output=True,
+                        timeout=2
+                    )
+                except Exception:
+                    pass
         
         if self.page:
             self.page.update()
@@ -317,6 +375,20 @@ class VideoPlayerComponent(ft.Column):
         """Toggle fullscreen mode."""
         if self.page:
             self.page.window.full_screen = not self.page.window.full_screen
+            self.page.update()
+            
+    def stop(self):
+        """Stop playback and reset state."""
+        if self._video:
+            try:
+                self._video.pause()
+                # Optional: seek to 0 or clear playlist
+            except:
+                pass
+        self._is_playing = False
+        self._loading_indicator.visible = False
+        self._now_playing_bar.visible = False
+        if self.page:
             self.page.update()
     
     def play_channel(self, channel: Channel):
@@ -327,7 +399,6 @@ class VideoPlayerComponent(ft.Column):
         self._channel_info.value = channel.name
         self._now_playing_bar.visible = True
         
-        # Check if we are currently casting
         # Check if we are currently casting
         if self._dlna_service.get_current_device():
             # Stop local playback if running (unless Sync is ON)
@@ -348,30 +419,92 @@ class VideoPlayerComponent(ft.Column):
             else:
                 return
 
-        # Show video, hide welcome
+        # Show loading indicator, hide welcome
         self._welcome.visible = False
-        self._video_container.visible = True
-        
-        try:
-            # Add the new channel to playlist
-            self._video.playlist_add(fv.VideoMedia(resource=channel.url))
-            
-            # Jump to the new item
-            playlist_len = len(self._video.playlist)
-            if playlist_len > 0:
-                self._video.jump_to(playlist_len - 1)
-            
-            self._video.play()
-            self._is_playing = True
-        except Exception as e:
-            if self._on_error:
-                self._on_error(str(e))
+        self._loading_indicator.visible = True
+        self._video_container.visible = False
         
         if self.page:
             self.page.update()
+        
+        try:
+            # STOP current playback completely
+            self._video.stop()
+            
+            # CLEAR the playlist (remove all items)
+            # We do this multiple times to ensure it's empty
+            for _ in range(20):
+                try:
+                    self._video.playlist_remove(0)
+                except:
+                    break
+            
+            # ADD the new channel as the ONLY item
+            self._video.playlist_add(fv.VideoMedia(resource=channel.url))
+            
+            # JUMP to index 0 (the only item now)
+            self._video.jump_to(0)
+            
+            # PLAY
+            self._video.play()
+            self._is_playing = True
+            
+            # Show video container
+            self._loading_indicator.visible = False
+            self._video_container.visible = True
+            
+            if self.page:
+                self.page.update()
+
+        except Exception as e:
+            print(f"Play Error: {e}")
+            self._loading_indicator.visible = False
+            self._welcome.visible = True
+            if self._on_error:
+                self._on_error(str(e))
+
     
     def _on_video_loaded(self, e):
         """Handle video loaded event."""
+        print(f"Video loaded! Data: {e.data if hasattr(e, 'data') else 'No Data'}")
+            
+        if self.page:
+            self.page.update()
+    
+    def _on_track_changed(self, e):
+        """Handle track change event - this fires when audio/subtitle tracks are detected."""
+        print(f"Track Changed! Data: {e.data if hasattr(e, 'data') else 'No Data'}")
+        
+        # Try to parse track data if available
+        if hasattr(e, 'data') and e.data:
+            try:
+                import json
+                tracks = json.loads(e.data) if isinstance(e.data, str) else e.data
+                print(f"Parsed Tracks: {tracks}")
+                
+                # Extract audio and subtitle tracks
+                audio_tracks = []
+                subtitle_tracks = []
+                
+                if isinstance(tracks, dict):
+                    audio_tracks = tracks.get('audio', [])
+                    subtitle_tracks = tracks.get('subtitle', [])
+                elif isinstance(tracks, list):
+                    for track in tracks:
+                        if track.get('type') == 'audio':
+                            audio_tracks.append(track)
+                        elif track.get('type') == 'subtitle':
+                            subtitle_tracks.append(track)
+                
+                print(f"Audio Tracks: {audio_tracks}")
+                print(f"Subtitle Tracks: {subtitle_tracks}")
+                
+                # Update the track selector UI if tracks found
+                if audio_tracks or subtitle_tracks:
+                    self.set_tracks(audio_tracks, subtitle_tracks)
+            except Exception as ex:
+                print(f"Error parsing tracks: {ex}")
+        
         if self.page:
             self.page.update()
     
@@ -815,3 +948,105 @@ class VideoPlayerComponent(ft.Column):
         self._cast_status.value = ""
         self._cast_status.color = ft.Colors.WHITE70
 
+    def _show_audio_selector(self, e):
+        """Show audio track selector."""
+        if not self._overlay_container:
+            return
+        
+        # Get tracks from current channel if available
+        tracks = self._audio_tracks
+        if self._current_channel and hasattr(self._current_channel, 'audio_tracks'):
+            tracks = self._current_channel.audio_tracks or []
+        
+        # If no tracks detected, show some mock tracks for demo
+        if not tracks:
+            tracks = [
+                {"language": "und", "codec": "aac", "channels": 2},
+            ]
+        
+        selector = TrackSelector(
+            track_type="audio",
+            tracks=tracks,
+            current_track=self._current_audio_track,
+            on_track_select=self._on_audio_track_select,
+            on_close=self._close_track_selector,
+        )
+        
+        self._overlay_container.content = selector
+        self._overlay_container.visible = True
+        if self.page:
+            self._overlay_container.update()
+    
+    def _show_subtitle_selector(self, e):
+        """Show subtitle track selector."""
+        if not self._overlay_container:
+            return
+        
+        # Get tracks from current channel if available
+        tracks = self._subtitle_tracks
+        if self._current_channel and hasattr(self._current_channel, 'subtitle_tracks'):
+            tracks = self._current_channel.subtitle_tracks or []
+        
+        selector = TrackSelector(
+            track_type="subtitle",
+            tracks=tracks,
+            current_track=self._current_subtitle_track,
+            on_track_select=self._on_subtitle_track_select,
+            on_close=self._close_track_selector,
+        )
+        
+        self._overlay_container.content = selector
+        self._overlay_container.visible = True
+        if self.page:
+            self._overlay_container.update()
+    
+    def _on_audio_track_select(self, track_index: int):
+        """Handle audio track selection."""
+        self._current_audio_track = track_index
+        
+        # Update button appearance
+        if track_index >= 0:
+            self._audio_btn.icon_color = "#6366f1"  # Purple when active
+        else:
+            self._audio_btn.icon_color = ft.Colors.WHITE70
+        
+        # Note: Actual track switching requires flet_video support or 
+        # external player integration (ffmpeg, VLC). For now we update state.
+        # In a full implementation, you would call:
+        # self._video.set_audio_track(track_index)
+        
+        if self.page:
+            self.page.update()
+    
+    def _on_subtitle_track_select(self, track_index: int):
+        """Handle subtitle track selection."""
+        self._current_subtitle_track = track_index
+        
+        # Update button appearance
+        if track_index >= 0:
+            self._subtitle_btn.icon_color = "#22c55e"  # Green when active
+        else:
+            self._subtitle_btn.icon_color = ft.Colors.WHITE70
+        
+        # Note: Actual subtitle switching requires flet_video support or
+        # external subtitle rendering. For now we update state.
+        # In a full implementation, you would call:
+        # self._video.set_subtitle_track(track_index)
+        
+        if self.page:
+            self.page.update()
+    
+    def _close_track_selector(self):
+        """Close track selector overlay."""
+        if self._overlay_container:
+            self._overlay_container.visible = False
+            self._overlay_container.content = None
+            if self.page:
+                self._overlay_container.update()
+    
+    def set_tracks(self, audio_tracks: List[dict] = None, subtitle_tracks: List[dict] = None):
+        """Set available tracks for the current stream."""
+        if audio_tracks is not None:
+            self._audio_tracks = audio_tracks
+        if subtitle_tracks is not None:
+            self._subtitle_tracks = subtitle_tracks

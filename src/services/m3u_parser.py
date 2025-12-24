@@ -1,4 +1,4 @@
-"""M3U/M3U8 playlist parser with support for large files."""
+"""M3U/M3U8 playlist parser with support for large files and content type detection."""
 import re
 import httpx
 import aiofiles
@@ -14,6 +14,55 @@ class M3UParser:
     TIMEOUT = 120.0  # 2 minutes
     MAX_RETRIES = 3
     CHUNK_SIZE = 65536  # 64KB chunks
+    
+    # Content type detection patterns
+    MOVIE_GROUP_PATTERNS = [
+        r'\bvod\b', r'\bmovie', r'\bfilm', r'\bcinema', r'\bafflam',
+        r'\b4k\s*movies?\b', r'\bhd\s*movies?\b', r'\blatest\s*movies?\b',
+        r'\bnew\s*movies?\b', r'\baction\b', r'\bcomedy\b', r'\bdrama\b',
+        r'\bhorror\b', r'\bthriller\b', r'\bromance\b', r'\bsci-?fi\b',
+        r'\bdocumentary\b', r'\banimation\b', r'\bfamily\b', r'\badventure\b',
+        r'\bwestern\b', r'\bmusical\b', r'\bwar\b', r'\bcrime\b', r'\bmystery\b',
+        r'\bfantasy\b', r'\bkids\s*movies?\b', r'\b\d{4}\b',  # Years like 2023, 2024
+    ]
+    
+    SERIES_GROUP_PATTERNS = [
+        r'\bseries\b', r'\btv\s*show', r'\bshow', r'\bepisode', r'\bseason',
+        r'\bmosalsal', r'\bمسلسل', r'\bsitcom\b', r'\bdrama\s*series\b',
+        r'\bnetflix\b', r'\bamazon\b', r'\bhbo\b', r'\bdisney\b', r'\bapple\s*tv\b',
+        r'\bhulu\b', r'\bprime\b', r'\bparamount\b', r'\bpeacock\b',
+        r'\boriginal\s*series\b', r'\bweb\s*series\b', r'\bmini\s*series\b',
+        r'\banime\s*series\b', r'\bk-?drama\b', r'\btelenovela\b',
+    ]
+    
+    LIVE_GROUP_PATTERNS = [
+        r'\blive\b', r'\btv\b', r'\bchannel', r'\bnews\b', r'\bsport',
+        r'\bmusic\b', r'\bkids\b', r'\breligious\b', r'\bislam',
+        r'\bentertainment\b', r'\bgeneral\b', r'\bnational\b', r'\blocal\b',
+        r'\bregional\b', r'\binternational\b', r'\bworld\b', r'\b24\/?7\b',
+        r'\bfta\b', r'\bfree\s*to\s*air\b', r'\biptv\b', r'\bhevc\b', r'\bfhd\b',
+        r'\buhd\b', r'\bsd\b', r'\bhd\b', r'\bpay\s*per\s*view\b', r'\bppv\b',
+    ]
+    
+    # Series episode patterns in names
+    SERIES_NAME_PATTERNS = [
+        r's\d{1,2}\s*e\d{1,2}',  # S01E01, S1E1
+        r'season\s*\d+',         # Season 1
+        r'episode\s*\d+',        # Episode 1
+        r'ep\s*\d+',             # Ep 1
+        r'\bse?\d{1,2}\.?e?\d{1,2}\b',  # S01.E01, S1.1
+        r'\[\d+x\d+\]',          # [1x01]
+        r'e\d{2,3}\b',           # E01, E001
+    ]
+    
+    # Movie patterns in names (years, quality)
+    MOVIE_NAME_PATTERNS = [
+        r'\(\d{4}\)',            # (2023)
+        r'\[\d{4}\]',            # [2023]
+        r'\b(19|20)\d{2}\b',     # 1990-2099
+        r'\b(720p|1080p|2160p|4k|hdr)\b',
+        r'\b(bluray|bdrip|webrip|hdtv|dvdrip)\b',
+    ]
     
     @classmethod
     async def parse_from_url(
@@ -136,6 +185,57 @@ class M3UParser:
         return channels
     
     @classmethod
+    def _detect_content_type(cls, name: str, group: str, url: str) -> str:
+        """Detect content type based on name, group, and URL patterns."""
+        name_lower = name.lower()
+        group_lower = group.lower()
+        url_lower = url.lower()
+        
+        # Check URL patterns first (most reliable for some providers)
+        if '/movie/' in url_lower or '/vod/' in url_lower:
+            return 'movie'
+        if '/series/' in url_lower or '/episode/' in url_lower:
+            return 'series'
+        if '/live/' in url_lower:
+            return 'live'
+        
+        # Check for series patterns in name (high priority)
+        for pattern in cls.SERIES_NAME_PATTERNS:
+            if re.search(pattern, name_lower, re.IGNORECASE):
+                return 'series'
+        
+        # Check group patterns for series
+        for pattern in cls.SERIES_GROUP_PATTERNS:
+            if re.search(pattern, group_lower, re.IGNORECASE):
+                return 'series'
+        
+        # Check for movie patterns in name
+        movie_indicators = 0
+        for pattern in cls.MOVIE_NAME_PATTERNS:
+            if re.search(pattern, name_lower, re.IGNORECASE):
+                movie_indicators += 1
+        
+        # Check group patterns for movies
+        for pattern in cls.MOVIE_GROUP_PATTERNS:
+            if re.search(pattern, group_lower, re.IGNORECASE):
+                # If group contains movie patterns and not live patterns
+                is_live = any(re.search(p, group_lower, re.IGNORECASE) for p in cls.LIVE_GROUP_PATTERNS[:6])
+                if not is_live:
+                    return 'movie'
+        
+        # If multiple movie indicators in name and no clear live patterns
+        if movie_indicators >= 2:
+            return 'movie'
+        
+        # Check group patterns for live TV
+        for pattern in cls.LIVE_GROUP_PATTERNS:
+            if re.search(pattern, group_lower, re.IGNORECASE):
+                return 'live'
+        
+        # Default to live for anything else (traditional TV channels)
+        return 'live'
+    
+    @classmethod
     def _parse_channel(cls, extinf_line: str, url: str) -> Optional[Channel]:
         """Parse a single channel from EXTINF line and URL."""
         try:
@@ -191,12 +291,77 @@ class M3UParser:
             if group_match and group_match.group(1):
                 group = group_match.group(1)
             
+            # Extract tvg-id for EPG
+            tvg_id = ""
+            tvg_id_match = re.search(r'tvg-id="([^"]*)"', extinf_line, re.IGNORECASE)
+            if tvg_id_match:
+                tvg_id = tvg_id_match.group(1)
+            
+            # Detect content type
+            content_type = cls._detect_content_type(name, group, url)
+            
+            # Extract series info if applicable
+            series_id = None
+            season = None
+            episode = None
+            
+            if content_type == 'series':
+                # Try to extract season/episode
+                se_match = re.search(r's(\d{1,2})\s*e(\d{1,2})', name, re.IGNORECASE)
+                if se_match:
+                    season = int(se_match.group(1))
+                    episode = int(se_match.group(2))
+                    # Extract series name: everything before SxxExx
+                    series_name = name[:se_match.start()].strip()
+                    # Clean up series name 
+                    series_name = re.sub(r'[.\-_]', ' ', series_name).strip()
+                    series_name = re.sub(r'\s+', ' ', series_name).title()
+                else:
+                    # Try season pattern
+                    season_match = re.search(r'season\s*(\d+)', name, re.IGNORECASE)
+                    if season_match:
+                        season = int(season_match.group(1))
+                        # Series name might be before "Season X"
+                        series_name = name[:season_match.start()].strip()
+                    
+                    # Try episode pattern
+                    ep_match = re.search(r'(?:episode|ep)\s*(\d+)', name, re.IGNORECASE)
+                    if ep_match:
+                        episode = int(ep_match.group(1))
+                        if not season: # If we haven't found season yet
+                             # Maybe just before episode?
+                             if not series_name:
+                                 series_name = name[:ep_match.start()].strip()
+
+            # Clean series name if found
+            if 'series_name' in locals() and series_name:
+                 # Remove common prefixes/suffixes
+                 pass
+            else:
+                 # If no series name extracted but identified as series, use group or part of name
+                 if content_type == 'series':
+                     series_name = name
+                     # Try to remove episode info manually if regex failed
+                     series_name = re.sub(r'E\d+', '', series_name).strip()
+                     series_name = re.sub(r'\d{4}', '', series_name).strip() # Remove year
+
+            # Ensure normalized series name
+            if 'series_name' not in locals() or not series_name:
+                 series_name = name
+            
             return Channel(
                 name=name,
                 url=url,
                 logo=logo,
                 group=group,
-                is_favorite=False
+                is_favorite=False,
+                content_type=content_type,
+                tvg_id=tvg_id,
+                epg_channel_id=tvg_id,
+                series_id=series_id,
+                series_name=series_name,
+                season=season,
+                episode=episode,
             )
             
         except Exception:

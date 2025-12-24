@@ -11,6 +11,7 @@ class Playlist:
     name: str
     source: str  # URL or file path
     channels: List[Channel] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)  # Store provider info (e.g. Xtream creds)
     
     def get_groups(self) -> List[str]:
         """Get all unique group names from channels."""

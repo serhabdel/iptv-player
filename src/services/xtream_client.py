@@ -54,11 +54,34 @@ class XtreamCategory:
 class XtreamCodesClient:
     """Client for Xtream Codes API."""
     
-    TIMEOUT = 30.0
+    TIMEOUT = 60.0
+    
+    # Headers to mimic a TV/media player app
+    DEFAULT_HEADERS = {
+        "User-Agent": "IPTV Smarters Pro/2.2.2.5 (Linux; Android 10)",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
     
     def __init__(self, credentials: XtreamCredentials):
         self.credentials = credentials
-        self._base_url = credentials.server.rstrip('/')
+        # Normalize the server URL
+        server = credentials.server.strip().rstrip('/')
+        # Add http:// if no protocol specified
+        if not server.startswith('http://') and not server.startswith('https://'):
+            server = f'http://{server}'
+        self._base_url = server
+    
+    def _create_client(self) -> httpx.AsyncClient:
+        """Create configured HTTP client."""
+        return httpx.AsyncClient(
+            timeout=self.TIMEOUT,
+            follow_redirects=True,
+            headers=self.DEFAULT_HEADERS,
+            verify=False,  # Some IPTV servers have invalid SSL certs
+            http2=False,   # Force HTTP/1.1 for better compatibility
+        )
     
     def _get_api_url(self, action: str, extra_params: Optional[Dict[str, str]] = None) -> str:
         """Build API URL with authentication."""
@@ -73,15 +96,29 @@ class XtreamCodesClient:
         """Test connection and get account information."""
         url = f"{self._base_url}/player_api.php?username={self.credentials.username}&password={self.credentials.password}"
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
+        try:
+            async with self._create_client() as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.ConnectError as e:
+            raise Exception(f"Cannot connect to server: {self._base_url}") from e
+        except httpx.TimeoutException:
+            raise Exception(f"Connection timed out after {self.TIMEOUT}s")
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"Server returned error {e.response.status_code}") from e
+        except Exception as e:
+            raise Exception(f"Connection error: {type(e).__name__} - {str(e) or 'Unknown error'}") from e
         
         if "user_info" not in data:
-            raise Exception("Invalid response from server")
+            raise Exception(f"Invalid response: expected 'user_info' in response. Got keys: {list(data.keys())}")
         
         user_info = data["user_info"]
+        
+        # Check for authentication errors
+        status = user_info.get("status", "")
+        if status.lower() in ["disabled", "banned", "expired"]:
+            raise Exception(f"Account status: {status}")
         
         return XtreamAccountInfo(
             username=user_info.get("username", ""),
@@ -97,7 +134,7 @@ class XtreamCodesClient:
         """Get all live stream categories."""
         url = self._get_api_url("get_live_categories")
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -116,7 +153,7 @@ class XtreamCodesClient:
         extra_params = {"category_id": category_id} if category_id else None
         url = self._get_api_url("get_live_streams", extra_params)
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -135,6 +172,7 @@ class XtreamCodesClient:
                 tvg_id=item.get("epg_channel_id"),
                 tvg_name=item.get("name"),
                 is_favorite=False,
+                content_type="live",
             ))
         return channels
     
@@ -142,7 +180,7 @@ class XtreamCodesClient:
         """Get all VOD categories."""
         url = self._get_api_url("get_vod_categories")
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -161,7 +199,7 @@ class XtreamCodesClient:
         extra_params = {"category_id": category_id} if category_id else None
         url = self._get_api_url("get_vod_streams", extra_params)
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -179,6 +217,7 @@ class XtreamCodesClient:
                 logo=item.get("stream_icon", ""),
                 group=f"VOD - {item.get('category_name', 'Movies')}",
                 is_favorite=False,
+                content_type="movie",
             ))
         return channels
     
@@ -186,7 +225,7 @@ class XtreamCodesClient:
         """Get all series categories."""
         url = self._get_api_url("get_series_categories")
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -205,7 +244,7 @@ class XtreamCodesClient:
         extra_params = {"category_id": category_id} if category_id else None
         url = self._get_api_url("get_series", extra_params)
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -216,7 +255,7 @@ class XtreamCodesClient:
         """Get detailed series information including episodes."""
         url = self._get_api_url("get_series_info", {"series_id": series_id})
         
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+        async with self._create_client() as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
@@ -228,5 +267,44 @@ class XtreamCodesClient:
         return f"{self._base_url}/series/{self.credentials.username}/{self.credentials.password}/{episode_id}.{extension}"
     
     async def get_all_channels(self) -> List[Channel]:
-        """Get all live streams as channels (convenience method)."""
-        return await self.get_live_streams()
+        """Get all live streams, VODs, and Series."""
+        live_task = self.get_live_streams()
+        vod_task = self.get_vod_streams()
+        series_task = self.get_series()
+        
+        import asyncio
+        results = await asyncio.gather(live_task, vod_task, series_task, return_exceptions=True)
+        
+        channels = []
+        # Process live results
+        if isinstance(results[0], list):
+            channels.extend(results[0])
+        else:
+            print(f"Error fetching live streams: {results[0]}")
+            
+        # Process VOD results
+        if isinstance(results[1], list):
+            channels.extend(results[1])
+        else:
+             print(f"Error fetching VOD streams: {results[1]}")
+
+        # Process Series results
+        if isinstance(results[2], list):
+             for item in results[2]:
+                 # Map series to a Channel object
+                 # URL is a placeholder that identifies it as an Xtream series
+                 series_id = item.get("series_id", "")
+                 channels.append(Channel(
+                     name=item.get("name", "Unknown Series"),
+                     url=f"xtream://series/{series_id}",
+                     logo=item.get("cover", ""),
+                     group=f"Series - {item.get('category_name', 'Uncategorized')}",
+                     is_favorite=False,
+                     content_type="series",
+                     series_id=str(series_id),
+                     series_name=item.get("name", ""),
+                 ))
+        else:
+             print(f"Error fetching Series: {results[2]}")
+             
+        return channels

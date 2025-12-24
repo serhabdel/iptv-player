@@ -51,9 +51,21 @@ sudo dpkg -i iptv-player.deb
 3.  Install dependencies: `pip install -r requirements.txt`
 4.  Run: `flet run main.py` or build the .exe using `flet pack main.py`.
 
-### Other Linux
+### Other Linux (AppImage)
 
-You can run the source code directly or use the AppImage (if available).
+Run the AppImage directly:
+```bash
+chmod +x iptv-player.AppImage
+./iptv-player.AppImage
+```
+
+You can build it using `scripts/build_appimage.sh` (requires `ipvt-player` binary from `.deb` build).
+
+### Android
+
+To build for Android:
+1.  Install Flutter SDK and Android SDK.
+2.  Run: `scripts/build_android.sh` or `flet build apk`.
 
 ## Casting Guide
 

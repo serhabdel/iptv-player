@@ -355,6 +355,90 @@ class SettingsView(ft.Container):
             bgcolor=ft.Colors.with_opacity(0.3, ft.Colors.BLACK),
         )
         
+        # Data management section
+        self._reindex_status = ft.Text("", size=11, color=ft.Colors.WHITE54)
+        
+        data_section = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.STORAGE_ROUNDED, color=ft.Colors.ORANGE_400, size=24),
+                            ft.Text(
+                                "Data Management",
+                                size=16,
+                                weight=ft.FontWeight.W_600,
+                                color=ft.Colors.WHITE,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    ft.Container(height=12),
+                    # Reindex section
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                text="Reindex All Playlists",
+                                icon=ft.Icons.REFRESH_ROUNDED,
+                                bgcolor=ft.Colors.BLUE_700,
+                                color=ft.Colors.WHITE,
+                                on_click=self._reindex_playlists,
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                    ft.Text(
+                        "🔄 Reindex will re-parse all playlists to detect Live TV, Movies, and Series",
+                        size=11,
+                        color=ft.Colors.BLUE_300,
+                    ),
+                    self._reindex_status,
+                    ft.Container(height=16),
+                    ft.Divider(height=1, color=ft.Colors.WHITE10),
+                    ft.Container(height=16),
+                    ft.Row(
+                        [
+                            ft.OutlinedButton(
+                                text="Clear Recently Viewed",
+                                icon=ft.Icons.HISTORY_ROUNDED,
+                                style=ft.ButtonStyle(
+                                    color=ft.Colors.WHITE70,
+                                    side=ft.BorderSide(1, ft.Colors.WHITE24),
+                                ),
+                                on_click=self._clear_recently_viewed,
+                            ),
+                            ft.OutlinedButton(
+                                text="Clear Favorites",
+                                icon=ft.Icons.FAVORITE_BORDER_ROUNDED,
+                                style=ft.ButtonStyle(
+                                    color=ft.Colors.WHITE70,
+                                    side=ft.BorderSide(1, ft.Colors.WHITE24),
+                                ),
+                                on_click=self._clear_favorites,
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                    ft.Container(height=8),
+                    ft.ElevatedButton(
+                        text="Reset All Data",
+                        icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+                        bgcolor=ft.Colors.RED_700,
+                        color=ft.Colors.WHITE,
+                        on_click=self._reset_all_data,
+                    ),
+                    ft.Text(
+                        "⚠️ Reset will remove all playlists, favorites, and settings",
+                        size=11,
+                        color=ft.Colors.RED_300,
+                    ),
+                ],
+            ),
+            padding=ft.padding.all(20),
+            border_radius=16,
+            bgcolor=ft.Colors.with_opacity(0.3, ft.Colors.BLACK),
+        )
+        
         self.content = ft.Column(
             [
                 header,
@@ -365,9 +449,11 @@ class SettingsView(ft.Container):
                             add_file_section,
                             xtream_section,
                             playlists_section,
+                            data_section,
                         ],
                         spacing=16,
                         expand=True,
+                        scroll=ft.ScrollMode.AUTO,
                     ),
                     padding=ft.padding.all(20),
                     expand=True,
@@ -758,8 +844,8 @@ class SettingsView(ft.Container):
             # Save credentials
             self._state.add_xtream_provider(credentials)
             
-            # Load live channels
-            channels = await client.get_live_streams()
+            # Load all channels (Live + VOD)
+            channels = await client.get_all_channels()
             
             # Create a playlist from the channels
             from ..models.playlist import Playlist
@@ -767,6 +853,7 @@ class SettingsView(ft.Container):
                 name=f"Xtream: {username}",
                 source=f"xtream://{server}",
                 channels=channels,
+                metadata=credentials.to_dict(),  # Store credentials for lazy loading
             )
             self._state.add_playlist(playlist)
             
@@ -794,7 +881,7 @@ class SettingsView(ft.Container):
             credentials = XtreamCredentials.from_dict(provider)
             client = XtreamCodesClient(credentials)
             
-            channels = await client.get_live_streams()
+            channels = await client.get_all_channels()
             
             # Find and update the playlist
             from ..models.playlist import Playlist
@@ -802,6 +889,7 @@ class SettingsView(ft.Container):
                 name=f"Xtream: {credentials.username}",
                 source=f"xtream://{credentials.server}",
                 channels=channels,
+                metadata=credentials.to_dict(),
             )
             
             # Remove old playlist with same source
@@ -836,5 +924,121 @@ class SettingsView(ft.Container):
         self._update_xtream_provider_list()
         self._update_playlist_list()
         
+        if self.page:
+            self.page.update()
+    
+    def _clear_recently_viewed(self, e):
+        """Clear recently viewed history."""
+        self._state.clear_recently_viewed()
+        self._status_text.value = "✓ Recently viewed cleared"
+        self._status_text.color = ft.Colors.GREEN_300
+        if self.page:
+            self.page.update()
+    
+    def _clear_favorites(self, e):
+        """Clear all favorites."""
+        self._state.clear_favorites()
+        self._status_text.value = "✓ Favorites cleared"
+        self._status_text.color = ft.Colors.GREEN_300
+        if self.page:
+            self.page.update()
+    
+    def _reset_all_data(self, e):
+        """Reset all application data."""
+        # Clear all playlists
+        for playlist in list(self._state.get_playlists()):
+            self._state.remove_playlist(playlist)
+        
+        # Clear all Xtream providers
+        for provider in list(self._state.get_xtream_providers()):
+            self._state.remove_xtream_provider(
+                provider.get("server", ""),
+                provider.get("username", "")
+            )
+        
+        # Clear other data
+        self._state.clear_recently_viewed()
+        self._state.clear_favorites()
+        self._state.clear_settings()
+        
+        # Update UI
+        self._update_playlist_list()
+        self._update_xtream_provider_list()
+        
+        self._status_text.value = "✓ All data has been reset"
+        self._status_text.color = ft.Colors.GREEN_300
+        if self.page:
+            self.page.update()
+    
+    async def _reindex_playlists(self, e):
+        """Re-parse all playlists to apply content type detection."""
+        playlists = self._state.get_playlists()
+        
+        if not playlists:
+            self._reindex_status.value = "No playlists to reindex"
+            self._reindex_status.color = ft.Colors.ORANGE_300
+            if self.page:
+                self.page.update()
+            return
+        
+        self._reindex_status.value = f"Reindexing {len(playlists)} playlists..."
+        self._reindex_status.color = ft.Colors.WHITE54
+        if self.page:
+            self.page.update()
+        
+        total_live = 0
+        total_movies = 0
+        total_series = 0
+        errors = 0
+        
+        for i, playlist in enumerate(playlists):
+            self._reindex_status.value = f"Reindexing {i+1}/{len(playlists)}: {playlist.name}..."
+            if self.page:
+                self.page.update()
+            
+            try:
+                source = playlist.source
+                
+                # Re-parse based on source type
+                if source.startswith('http://') or source.startswith('https://'):
+                    new_playlist = await M3UParser.parse_from_url(source)
+                elif source.startswith('xtream://'):
+                    # Skip Xtream playlists for now - they need special handling
+                    continue
+                else:
+                    # Local file
+                    new_playlist = await M3UParser.parse_from_file(source)
+                
+                # Count content types
+                for ch in new_playlist.channels:
+                    content_type = getattr(ch, 'content_type', 'live')
+                    if content_type == 'live':
+                        total_live += 1
+                    elif content_type == 'movie':
+                        total_movies += 1
+                    elif content_type == 'series':
+                        total_series += 1
+                
+                # Remove old and add new
+                self._state.remove_playlist(playlist)
+                new_playlist.name = playlist.name  # Keep original name
+                new_playlist.source = source
+                self._state.add_playlist(new_playlist)
+                
+            except Exception as ex:
+                errors += 1
+                print(f"Error reindexing {playlist.name}: {ex}")
+        
+        # Update counts
+        # self._state.refresh_content_counts()
+        self._update_playlist_list()
+        
+        # Show results
+        self._reindex_status.value = (
+            f"✓ Reindex complete! Live: {total_live:,} | "
+            f"Movies: {total_movies:,} | Series: {total_series:,}"
+            + (f" | Errors: {errors}" if errors else "")
+        )
+        self._reindex_status.color = ft.Colors.GREEN_300
         if self.page:
             self.page.update()
