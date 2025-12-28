@@ -125,8 +125,8 @@ class StreamProxyServer:
             return web.Response(
                 status=200,
                 headers={
-                    'Content-Type': 'video/MP2T',
-                    'Accept-Ranges': 'none',
+                    'Content-Type': content_type,
+                    'Accept-Ranges': 'bytes',  # Changed from none to bytes
                     'Connection': 'keep-alive',
                     'Access-Control-Allow-Origin': '*',
                 }
@@ -145,27 +145,34 @@ class StreamProxyServer:
             content_type = 'video/mp4'
         elif path.endswith('.mkv'):
             content_type = 'video/x-matroska'
-            
-        # Create streaming response
-        response = web.StreamResponse(
-            status=200,
-            headers={
-                'Content-Type': content_type,
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
-                'Transfer-Encoding': 'chunked',
-            }
-        )
+        # Stream from source to client
+        timeout = ClientTimeout(total=None, connect=30, sock_read=60)
         
         try:
-            await response.prepare(request)
-            
-            # Stream from source to client
-            timeout = ClientTimeout(total=None, connect=30, sock_read=60)
-            
             async with ClientSession(timeout=timeout) as session:
                 async with session.get(current_url, headers=headers) as upstream:
+                    # Relay the status code (crucial for 206 Partial Content)
+                    status = upstream.status
+                    
+                    # Prepare headers to relay
+                    relay_headers = {
+                        'Content-Type': content_type,
+                        'Accept-Ranges': 'bytes',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                        'Access-Control-Allow-Origin': '*',
+                    }
+                    
+                    # Relay important seeking headers if present
+                    if 'Content-Range' in upstream.headers:
+                        relay_headers['Content-Range'] = upstream.headers['Content-Range']
+                    if 'Content-Length' in upstream.headers:
+                        relay_headers['Content-Length'] = upstream.headers['Content-Length']
+                    
+                    # Create and prepare the response with the correct status
+                    response = web.StreamResponse(status=status, headers=relay_headers)
+                    await response.prepare(request)
+                    
                     # Choose chunk size based on throttling
                     if self._throttle_enabled:
                         # Smaller chunks for better throttle precision
@@ -202,7 +209,7 @@ class StreamProxyServer:
                             
         except asyncio.CancelledError:
             pass
-        except Exception as e:
+        except Exception:
             # Suppress "Cannot write to closing transport" and similar noise
             pass
         

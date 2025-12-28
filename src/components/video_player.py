@@ -67,7 +67,8 @@ class VideoPlayerComponent(ft.Column):
         self._video = fv.Video(
             expand=True,
             fill_color="#000000",
-            aspect_ratio=16/9,
+
+            # aspect_ratio=16/9,  # Removed to fix layout issues (black bars)
             volume=100,
             autoplay=True,
             filter_quality=ft.FilterQuality.HIGH,
@@ -380,6 +381,7 @@ class VideoPlayerComponent(ft.Column):
             bgcolor="#000000",
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
             visible=False,
+            alignment=ft.alignment.center,  # Center video to avoid black bars on one side
         )
         
         # Cast Overlay Controls
@@ -584,6 +586,8 @@ class VideoPlayerComponent(ft.Column):
             is_vod_or_series = (
                 "/movie/" in stream_url or 
                 "/series/" in stream_url or
+                "/vod/" in stream_url or
+                stream_url.lower().endswith(('.mp4', '.mkv', '.avi', '.mov')) or
                 getattr(channel, 'content_type', '') in ('movie', 'series')
             )
             
@@ -594,15 +598,14 @@ class VideoPlayerComponent(ft.Column):
                     "Accept": "*/*",
                     "Connection": "keep-alive",
                 }
-                extras = {
-                    "force-seekable": "yes",  # Fix "force it with --force-seekable=yes" errors
-                    "cache": "yes",
-                    "cache-secs": "30",
-                }
+                # Note: flet-video's 'extras' parameter is for metadata only, not MPV options
+                # The force-seekable option cannot be set through flet-video API
+                # Save stream info for IPC queries
+                self._current_stream_url = stream_url
+                
                 media = fv.VideoMedia(
                     resource=stream_url,
                     http_headers=http_headers,
-                    extras=extras,
                 )
             else:
                 # Live streams: no special options (was working before)
@@ -674,16 +677,103 @@ class VideoPlayerComponent(ft.Column):
         if self.page:
             self.page.update()
     
+    async def _refresh_tracks_from_ipc(self):
+        """Query MPV track list via IPC socket as a fallback."""
+        import socket
+        import json
+        
+        socket_path = "/tmp/mpv-iptv.sock"
+        try:
+            # Check if socket exists
+            import os
+            if not os.path.exists(socket_path):
+                return
+                
+            # Use asyncio to communicate with the socket
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+            
+            async def send_cmd(cmd):
+                writer.write((json.dumps({"command": cmd}) + "\n").encode())
+                await writer.drain()
+                line = await reader.readline()
+                return json.loads(line.decode()) if line else {}
+            
+            # 1. Query track-list
+            tracks_resp = await send_cmd(["get_property", "track-list"])
+            
+            # 2. Query active tracks (for checkmarks)
+            sid_resp = await send_cmd(["get_property", "sid"])
+            aid_resp = await send_cmd(["get_property", "aid"])
+            
+            writer.close()
+            try: await writer.wait_closed()
+            except: pass
+            
+            if tracks_resp.get("status") == "success":
+                tracks = tracks_resp.get("data", [])
+                
+                audio_tracks = []
+                subtitle_tracks = []
+                
+                active_sid = sid_resp.get("data")
+                active_aid = aid_resp.get("data")
+                
+                new_current_sub = -1 # Default to off
+                new_current_audio = 0
+                
+                for track in tracks:
+                    t_type = track.get("type")
+                    t_id = track.get("id")
+                    
+                    normalized = {
+                        "id": t_id,
+                        "language": track.get("lang", track.get("language", "und")),
+                        "title": track.get("title", ""),
+                        "codec": track.get("codec", ""),
+                        "default": track.get("default", False),
+                        "forced": track.get("forced", False),
+                    }
+                    
+                    if t_type == "audio":
+                        if t_id == active_aid:
+                            new_current_audio = len(audio_tracks)
+                        audio_tracks.append(normalized)
+                    elif t_type in ("sub", "subtitle"):
+                        if t_id == active_sid:
+                            new_current_sub = len(subtitle_tracks)
+                        subtitle_tracks.append(normalized)
+                
+                # Update tracks and active selection
+                if audio_tracks or subtitle_tracks:
+                    self._audio_tracks = audio_tracks
+                    self._subtitle_tracks = subtitle_tracks
+                    self._current_audio_track = new_current_audio
+                    self._current_subtitle_track = new_current_sub
+                    
+                    if self.page:
+                        self._update_audio_track_info()
+                        self.page.update()
+        except Exception as ex:
+            print(f"IPC track query failed: {ex}")
+
     def _on_track_changed(self, e):
         """Handle track change event - this fires when audio/subtitle tracks are detected."""
         print(f"Track Changed! Data: {e.data if hasattr(e, 'data') else 'No Data'}")
         
-        # Try to parse track data if available
+        # Schedule IPC refresh as it's more reliable
+        if self.page:
+            self.page.run_task(self._refresh_tracks_from_ipc)
+        
+        # Also try to parse track data if available (legacy support)
         if hasattr(e, 'data') and e.data:
             try:
                 import json
+                # Handle cases where data is just a track index (string or int)
+                if isinstance(e.data, (int, str)) and not str(e.data).startswith(('[', '{')):
+                    return # Just a selection event, ignore for discovery
+                    
                 tracks = json.loads(e.data) if isinstance(e.data, str) else e.data
-                print(f"Parsed Tracks: {tracks}")
+                print(f"Parsed Tracks from event: {tracks}")
                 
                 # Extract audio and subtitle tracks
                 audio_tracks = []
@@ -694,19 +784,16 @@ class VideoPlayerComponent(ft.Column):
                     subtitle_tracks = tracks.get('subtitle', [])
                 elif isinstance(tracks, list):
                     for track in tracks:
-                        if track.get('type') == 'audio':
+                        t_type = track.get('type', '')
+                        if t_type == 'audio':
                             audio_tracks.append(track)
-                        elif track.get('type') == 'subtitle':
-                            subtitle_tracks.append(track)
+                        elif t_type in ('subtitle', 'sub'):
+                            audio_tracks.append(track)
                 
-                print(f"Audio Tracks: {audio_tracks}")
-                print(f"Subtitle Tracks: {subtitle_tracks}")
-                
-                # Update the track selector UI if tracks found
                 if audio_tracks or subtitle_tracks:
                     self.set_tracks(audio_tracks, subtitle_tracks)
             except Exception as ex:
-                print(f"Error parsing tracks: {ex}")
+                print(f"Error parsing tracks from event: {ex}")
         
         if self.page:
             self.page.update()
@@ -1292,10 +1379,13 @@ class VideoPlayerComponent(ft.Column):
         self._cast_status.value = ""
         self._cast_status.color = ft.Colors.WHITE70
 
-    def _show_audio_selector(self, e):
+    async def _show_audio_selector(self, e):
         """Show audio track selector."""
         if not self._overlay_container:
             return
+            
+        # Refresh from IPC first to be sure
+        await self._refresh_tracks_from_ipc()
         
         # Get tracks from current channel if available
         tracks = self._audio_tracks
@@ -1321,14 +1411,19 @@ class VideoPlayerComponent(ft.Column):
         if self.page:
             self._overlay_container.update()
     
-    def _show_subtitle_selector(self, e):
+    async def _show_subtitle_selector(self, e):
         """Show subtitle track selector."""
         if not self._overlay_container:
             return
+            
+        # Refresh from IPC first to be sure
+        await self._refresh_tracks_from_ipc()
         
-        # Get tracks from current channel if available
-        tracks = self._subtitle_tracks
-        if self._current_channel and hasattr(self._current_channel, 'subtitle_tracks'):
+        # Prioritize tracks detected by the player at runtime
+        tracks = self._subtitle_tracks if self._subtitle_tracks else []
+        
+        # Fallback to static tracks from channel metadata only if none detected
+        if not tracks and self._current_channel and hasattr(self._current_channel, 'subtitle_tracks'):
             tracks = self._current_channel.subtitle_tracks or []
         
         selector = TrackSelector(
@@ -1353,11 +1448,28 @@ class VideoPlayerComponent(ft.Column):
             self._audio_btn.icon_color = "#6366f1"  # Purple when active
         else:
             self._audio_btn.icon_color = ft.Colors.WHITE70
-        
-        # Note: Actual track switching requires flet_video support or 
-        # external player integration (ffmpeg, VLC). For now we update state.
-        # In a full implementation, you would call:
-        # self._video.set_audio_track(track_index)
+            
+        # Get the actual ID if available, otherwise fallback to index
+        target_id = track_index
+        if 0 <= track_index < len(self._audio_tracks):
+            target_id = self._audio_tracks[track_index].get('id', track_index)
+            
+        # Try multiple ways to set the audio track
+        try:
+            self._video.audio_track = target_id
+            self._video.audioTrack = target_id
+            self._video.aid = target_id
+            
+            self._video._set_attr("audioTrack", str(target_id))
+            self._video._set_attr("aid", str(target_id))
+            
+            self._video.invoke_method("set_audio_track", {"index": str(target_id)})
+            self._video.invoke_method("set_audio_track", {"track_index": str(target_id)})
+            self._video.invoke_method("setAudioTrack", {"track_index": str(target_id)})
+            
+            self._video.update()
+        except Exception:
+            pass
         
         if self.page:
             self.page.update()
@@ -1372,14 +1484,37 @@ class VideoPlayerComponent(ft.Column):
         else:
             self._subtitle_btn.icon_color = ft.Colors.WHITE70
         
-        # Note: Actual subtitle switching requires flet_video support or
-        # external subtitle rendering. For now we update state.
-        # In a full implementation, you would call:
-        # self._video.set_subtitle_track(track_index)
+        # Get the actual ID if available, otherwise fallback to index
+        target_id = track_index
+        if 0 <= track_index < len(self._subtitle_tracks):
+            target_id = self._subtitle_tracks[track_index].get('id', track_index)
+        elif track_index < 0:
+            target_id = "no" # MPV way to turn off subs
+            
+        # Try multiple ways to set the subtitle track
+        # Since the library is undocumented, we try common property and method names
+        try:
+            # 1. Try setting properties directly (some forks of flet_video support this)
+            self._video.subtitle_track = target_id
+            self._video.subtitleTrack = target_id
+            self._video.sid = target_id
+            
+            # 2. Try set_attr with different names
+            self._video._set_attr("subtitleTrack", str(target_id))
+            self._video._set_attr("sid", str(target_id))
+            
+            # 3. Try common method names via invoke_method
+            self._video.invoke_method("set_subtitle_track", {"index": str(target_id)})
+            self._video.invoke_method("set_subtitle_track", {"track_index": str(target_id)})
+            self._video.invoke_method("setSubtitleTrack", {"track_index": str(target_id)})
+            
+            self._video.update()
+        except Exception as ex:
+            print(f"Subtitle switch attempt error (ignoring): {ex}")
         
         if self.page:
             self.page.update()
-    
+            
     def _close_track_selector(self):
         """Close track selector overlay."""
         if self._overlay_container:
