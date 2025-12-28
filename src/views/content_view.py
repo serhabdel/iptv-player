@@ -1,8 +1,10 @@
 """Content view with categories sidebar and grid/list display."""
 import flet as ft
+import asyncio
 from typing import Optional, Callable, List
 from ..models.channel import Channel
 from ..services.state_manager import StateManager
+from ..components.skeleton_loader import SkeletonGrid, SkeletonList
 
 
 class ContentView(ft.Container):
@@ -31,9 +33,20 @@ class ContentView(ft.Container):
         self._page_size = 50
         self._current_page = 0
         
-        # UI components
-        self._category_list = ft.Column([], spacing=4, scroll=ft.ScrollMode.AUTO)
-        self._content_grid = ft.Column([], spacing=8, scroll=ft.ScrollMode.AUTO)
+        # Loading state
+        self._is_loading = True
+        
+        # Skeleton loaders
+        self._skeleton_grid = SkeletonGrid(items_per_row=5, rows=3)
+        self._skeleton_list = SkeletonList(items=12)
+        
+        # UI components - Using ListView for virtualized rendering
+        self._category_list = ft.ListView(spacing=4, expand=True)
+        self._content_grid = ft.ListView(
+            spacing=8,
+            item_extent=220,  # Fixed height for grid rows (improves scroll perf)
+            expand=True,
+        )
         self._search_field = None
         self._channel_count_text = None
         
@@ -288,6 +301,14 @@ class ContentView(ft.Container):
         """Update the content grid with current channels."""
         self._content_grid.controls.clear()
         
+        # Show skeleton during loading
+        if self._is_loading:
+            if self.content_type in ["movie", "series"]:
+                self._content_grid.controls.append(self._skeleton_grid)
+            else:
+                self._content_grid.controls.append(self._skeleton_list)
+            return
+        
         # Filter channels
         channels = self._get_filtered_channels()
         self._displayed_channels = channels
@@ -381,26 +402,33 @@ class ContentView(ft.Container):
             )
     
     def _create_grid_card(self, channel: Channel) -> ft.Container:
-        """Create a grid card for movie/series."""
-        return ft.Container(
-            content=ft.Column(
-                [
-                    # Poster/Logo
-                    ft.Container(
-                        content=ft.Image(
-                            src=channel.logo,
-                            width=140,
-                            height=200,
-                            fit=ft.ImageFit.COVER,
-                            error_content=ft.Container(
-                                content=ft.Icon(
-                                    ft.Icons.MOVIE_ROUNDED if self.content_type == "movie" else ft.Icons.TV_ROUNDED,
-                                    size=48,
-                                    color=ft.Colors.WHITE24,
-                                ),
-                                alignment=ft.alignment.center,
-                            ),
-                        ) if channel.logo else ft.Container(
+        """Create a grid card for movie/series with favorite overlay."""
+        # Favorite button overlay
+        fav_overlay = ft.Container(
+            content=ft.IconButton(
+                icon=ft.Icons.FAVORITE_ROUNDED if channel.is_favorite else ft.Icons.FAVORITE_BORDER_ROUNDED,
+                icon_color=ft.Colors.PINK_400 if channel.is_favorite else ft.Colors.WHITE70,
+                icon_size=18,
+                on_click=lambda e, ch=channel: self._handle_favorite_toggle(ch),
+                style=ft.ButtonStyle(padding=4),
+            ),
+            right=4,
+            top=4,
+            bgcolor="#00000080",
+            border_radius=20,
+        )
+        
+        # Poster with overlay
+        poster_stack = ft.Stack(
+            [
+                # Poster/Logo
+                ft.Container(
+                    content=ft.Image(
+                        src=channel.logo,
+                        width=140,
+                        height=200,
+                        fit=ft.ImageFit.COVER,
+                        error_content=ft.Container(
                             content=ft.Icon(
                                 ft.Icons.MOVIE_ROUNDED if self.content_type == "movie" else ft.Icons.TV_ROUNDED,
                                 size=48,
@@ -408,12 +436,30 @@ class ContentView(ft.Container):
                             ),
                             alignment=ft.alignment.center,
                         ),
-                        width=140,
-                        height=200,
-                        border_radius=8,
-                        bgcolor="#1a1a2e",
-                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                    ) if channel.logo else ft.Container(
+                        content=ft.Icon(
+                            ft.Icons.MOVIE_ROUNDED if self.content_type == "movie" else ft.Icons.TV_ROUNDED,
+                            size=48,
+                            color=ft.Colors.WHITE24,
+                        ),
+                        alignment=ft.alignment.center,
                     ),
+                    width=140,
+                    height=200,
+                    border_radius=8,
+                    bgcolor="#1a1a2e",
+                    clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                ),
+                fav_overlay,
+            ],
+            width=140,
+            height=200,
+        )
+        
+        return ft.Container(
+            content=ft.Column(
+                [
+                    poster_stack,
                     # Title
                     ft.Container(
                         content=ft.Text(
@@ -436,6 +482,8 @@ class ContentView(ft.Container):
             padding=ft.padding.all(8),
             ink=True,
             on_hover=lambda e: self._on_card_hover(e),
+            animate_scale=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
+            animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
     
     def _create_list_item(self, channel: Channel) -> ft.Container:
@@ -497,20 +545,26 @@ class ContentView(ft.Container):
         )
     
     def _on_card_hover(self, e):
-        """Handle card hover."""
+        """Handle card hover with focus indicator for D-pad navigation."""
         if e.data == "true":
             e.control.bgcolor = ft.Colors.WHITE10
+            e.control.border = ft.border.all(2, ft.Colors.PURPLE_400)
+            e.control.scale = 1.03
         else:
             e.control.bgcolor = None
+            e.control.border = None
+            e.control.scale = 1.0
         if self.page:
             e.control.update()
     
     def _on_item_hover(self, e):
-        """Handle list item hover."""
+        """Handle list item hover with focus indicator."""
         if e.data == "true":
             e.control.bgcolor = "#252538"
+            e.control.border = ft.border.all(2, ft.Colors.PURPLE_400)
         else:
             e.control.bgcolor = "#1a1a2e"
+            e.control.border = None
         if self.page:
             e.control.update()
     
@@ -518,7 +572,7 @@ class ContentView(ft.Container):
         """Load channels for current content type."""
         self._channels = self.state.get_channels_by_type(self.content_type)
         self._displayed_channels = self._channels
-    
+        self._is_loading = False  # Mark loading complete
     def _get_categories(self) -> List[tuple]:
         """Get unique categories with counts."""
         category_counts = {}
@@ -595,18 +649,30 @@ class ContentView(ft.Container):
             self.page.update()
     
     def set_content_type(self, content_type: str):
-        """Change the content type."""
+        """Change the content type with loading transition."""
         self.content_type = content_type
         self._selected_category = "All"
         self._search_query = ""
         self._page_size = 50
+        self._is_loading = True  # Show skeleton
         self._build_ui()
         if self.page:
             self.update()
+            # Trigger async load for smooth transition
+            self.page.run_task(self._async_load_content)
     
-    def refresh(self):
-        """Refresh the content view."""
+    async def _async_load_content(self):
+        """Async content loading with skeleton transition."""
+        await asyncio.sleep(0.15)  # Brief delay for skeleton to show
         self._load_channels()
         self._update_content_grid()
         if self.page:
+            self.page.update()
+    
+    def refresh(self):
+        """Refresh the content view."""
+        self._is_loading = True
+        self._update_content_grid()
+        if self.page:
             self.update()
+            self.page.run_task(self._async_load_content)

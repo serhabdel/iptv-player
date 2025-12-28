@@ -23,6 +23,7 @@ class SeriesView(ft.Container):
         self._series_name: str = ""
         self._episodes: List[Channel] = []
         self._seasons: Dict[int, List[Channel]] = {}
+        self._sorted_seasons: List[int] = []  # Keep track of seasons in order
         self._selected_season: int = 1
         
         # UI Components
@@ -114,17 +115,17 @@ class SeriesView(ft.Container):
             else:
                 self._seasons[0] = unknown_season # 0 for Extras/Unknown
         
-        # Sort seasons
-        sorted_seasons = sorted(self._seasons.keys())
-        if not sorted_seasons:
-            sorted_seasons = [1]
+        # Sort seasons and store the list
+        self._sorted_seasons = sorted(self._seasons.keys())
+        if not self._sorted_seasons:
+            self._sorted_seasons = [1]
             self._seasons = {1: []}
             
-        self._selected_season = sorted_seasons[0]
+        self._selected_season = self._sorted_seasons[0]
         
         # update UI
         self._update_header()
-        self._update_season_tabs(sorted_seasons)
+        self._update_season_tabs()
         self._update_episode_list()
         
         if self.page:
@@ -214,10 +215,10 @@ class SeriesView(ft.Container):
             ),
         )
 
-    def _update_season_tabs(self, seasons: List[int]):
+    def _update_season_tabs(self):
         """Update season selection tabs."""
         self._season_tabs.tabs = []
-        for season_num in seasons:
+        for season_num in self._sorted_seasons:
             title = f"Season {season_num}" if season_num > 0 else "Extras"
             self._season_tabs.tabs.append(
                 ft.Tab(
@@ -229,20 +230,15 @@ class SeriesView(ft.Container):
     def _on_season_change(self, e):
         """Handle season tab change."""
         try:
-             # Get selected tab text
+            # Map tab index to actual season number from sorted list
             tab_index = self._season_tabs.selected_index
-            tab_text = self._season_tabs.tabs[tab_index].text
-            
-            if "Extras" in tab_text:
-                self._selected_season = 0
-            else:
-                self._selected_season = int(tab_text.replace("Season ", ""))
-                
-            self._update_episode_list()
-            if self.page:
-                self.update()
-        except:
-            pass
+            if 0 <= tab_index < len(self._sorted_seasons):
+                self._selected_season = self._sorted_seasons[tab_index]
+                self._update_episode_list()
+                if self.page:
+                    self.update()
+        except Exception as ex:
+            print(f"Error changing season: {ex}")
 
     def _update_episode_list(self):
         """Update list of episodes for selected season."""
@@ -257,14 +253,22 @@ class SeriesView(ft.Container):
 
     def _create_episode_item(self, episode: Channel) -> ft.Container:
         """Create a list item for an episode."""
-        ep_num = f"E{episode.episode}" if episode.episode else ""
-        name = episode.name
+        # Build episode label: SxxExx format using current selected season
+        season_num = episode.season if episode.season else self._selected_season
+        ep_num = episode.episode
         
-        # Clean name for display if it contains series info
-        if self._series_name and self._series_name in name:
-             # Try to strip series name from episode title for cleaner look
-             # This is a bit risky but makes for cleaner UI
-             pass
+        if season_num and ep_num:
+            ep_label = f"S{season_num:02d}E{ep_num:02d}"
+        elif ep_num:
+            ep_label = f"E{ep_num}"
+        else:
+            ep_label = ""
+        
+        # Get clean episode name (strip any existing SxxExx patterns)
+        name = episode.name
+        # Remove SxxExx pattern from name if present
+        import re
+        name = re.sub(r'S\d{1,2}E\d{1,2}\s*[-:]?\s*', '', name, flags=re.IGNORECASE).strip()
              
         return ft.Container(
             content=ft.Row(
@@ -276,7 +280,7 @@ class SeriesView(ft.Container):
                     ft.Column(
                         [
                             ft.Text(
-                                f"{ep_num} - {name}" if ep_num else name,
+                                f"{ep_label} - {name}" if ep_label else name,
                                 size=14,
                                 weight=ft.FontWeight.W_500,
                                 color=ft.Colors.WHITE,

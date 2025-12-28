@@ -56,6 +56,7 @@ class IPTVApp:
             state_manager=self.state,
             on_hub_select=self._on_hub_select,
             on_settings_click=self._show_settings,
+            on_play_channel=self._on_channel_select,
         )
         
         self._content_view = ContentView(
@@ -83,76 +84,84 @@ class IPTVApp:
             on_play_episode=self._play_series_episode,
         )
         
-        # Main container
+        # Main container with transition animation
         self._container = ft.Container(
             content=self._hub_view,
             expand=True,
+            animate_opacity=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
         
         self.page.add(self._container)
     
     def _show_hub(self):
-        """Show the hub view."""
+        """Show the hub view with fade transition."""
         self._navigation_stack = []  # Clear navigation stack
         self._current_view = "hub"
         self._hub_view.refresh()
-        self._container.content = self._hub_view
+        self._animate_view_switch(self._hub_view)
+    
+    def _animate_view_switch(self, new_view):
+        """Animate switching to a new view with fade effect."""
+        # Fade out
+        self._container.opacity = 0
+        self._container.update()
+        
+        # Switch content
+        self._container.content = new_view
+        
+        # Fade in
+        self._container.opacity = 1
         self.page.update()
     
     def _show_content(self, content_type: str):
-        """Show content view for a specific type."""
+        """Show content view for a specific type with transition."""
         self._navigation_stack.append(self._current_view)
         self._current_view = "content"
         self._current_content_type = content_type
         self._content_view.set_content_type(content_type)
-        self._container.content = self._content_view
-        self.page.update()
+        self._animate_view_switch(self._content_view)
     
     def _show_player(self):
-        """Show the player view."""
+        """Show the player view with transition."""
         self._navigation_stack.append(self._current_view)
         self._current_view = "player"
         self._player_view.refresh()
-        self._container.content = self._player_view
-        self.page.update()
+        self._animate_view_switch(self._player_view)
     
     def _show_settings(self):
-        """Show settings view."""
+        """Show settings view with transition."""
         self._navigation_stack.append(self._current_view)
         self._current_view = "settings"
-        self._container.content = self._settings_view
-        self.page.update()
+        self._animate_view_switch(self._settings_view)
     
     def _go_back(self):
-        """Navigate back."""
+        """Navigate back with transition."""
         if self._navigation_stack:
             previous = self._navigation_stack.pop()
             
             if previous == "hub":
                 self._current_view = "hub"
                 self._hub_view.refresh()
-                self._container.content = self._hub_view
+                self._animate_view_switch(self._hub_view)
             elif previous == "content":
                 self._current_view = "content"
                 self._content_view.refresh()
-                self._container.content = self._content_view
+                self._animate_view_switch(self._content_view)
             elif previous == "player":
                 self._current_view = "player"
                 self._player_view.refresh()
-                self._container.content = self._player_view
+                self._animate_view_switch(self._player_view)
             elif previous == "series":
                 self._current_view = "series"
-                self._container.content = self._series_view
+                self._animate_view_switch(self._series_view)
             else:
                 # Default to hub
                 self._current_view = "hub"
                 self._hub_view.refresh()
-                self._container.content = self._hub_view
+                self._animate_view_switch(self._hub_view)
         else:
             # No history, go to hub
             self._show_hub()
-        
-        self.page.update()
     
     def _on_hub_select(self, hub_id: str):
         """Handle hub selection."""
@@ -162,12 +171,11 @@ class IPTVApp:
             self._show_content(hub_id)
     
     def _show_series(self, series_name: str, episodes: list):
-        """Show series detail view."""
+        """Show series detail view with transition."""
         self._navigation_stack.append(self._current_view)
         self._current_view = "series"
         self._series_view.load_series(series_name, episodes)
-        self._container.content = self._series_view
-        self.page.update()
+        self._animate_view_switch(self._series_view)
         
     def _play_series_episode(self, channel):
         """Play an episode from series view."""
@@ -225,38 +233,47 @@ class IPTVApp:
             
             # Fetch details
             data = await client.get_series_info(channel.series_id)
-            episodes_data = data.get("episodes", {})
             
-            # Map to Channels
-            episodes = []
-            
-            # Handle both list (rare) and dict (common) formats
-            # Dict format: "1": [ep1, ep2], "2": [...] (Keys are season numbers)
-            items_iter = episodes_data.values() if isinstance(episodes_data, dict) else episodes_data
-            
-            # Flatten if it's a dict of lists
+            # Handle different API response formats
+            # Some providers return list directly, others return dict with "episodes" key
             all_eps = []
-            if isinstance(episodes_data, dict):
-                for season_eps in episodes_data.values():
-                    all_eps.extend(season_eps)
-            else:
-                all_eps = episodes_data
-
+            if isinstance(data, list):
+                # Provider returned list of episodes directly
+                all_eps = data
+            elif isinstance(data, dict):
+                episodes_data = data.get("episodes", {})
+                # Episodes can be dict (keyed by season) or list
+                if isinstance(episodes_data, dict):
+                    for season_eps in episodes_data.values():
+                        if isinstance(season_eps, list):
+                            all_eps.extend(season_eps)
+                elif isinstance(episodes_data, list):
+                    all_eps = episodes_data
+            
+            # Map to Channel objects
+            episodes = []
             from .models.channel import Channel
             for ep in all_eps:
+                # Handle case where ep might not be a dict
+                if not isinstance(ep, dict):
+                    continue
+                    
                 ep_id = str(ep.get("id", ""))
                 ext = ep.get("container_extension", "mp4")
                 url = client.build_series_episode_url(ep_id, ext)
                 
+                # Safely get nested info
+                ep_info = ep.get("info", {}) if isinstance(ep.get("info"), dict) else {}
+                
                 episodes.append(Channel(
                     name=ep.get("title", f"Episode {ep.get('episode_num')}"),
                     url=url,
-                    logo=ep.get("info", {}).get("movie_image", "") or channel.logo, # Fallback to series logo
+                    logo=ep_info.get("movie_image", "") or channel.logo,
                     group=channel.group,
                     content_type="series",
                     series_name=channel.name,
-                    season=int(ep.get("season", 1)),
-                    episode=int(ep.get("episode_num", 0)),
+                    season=int(ep.get("season", 1) or 1),
+                    episode=int(ep.get("episode_num", 0) or 0),
                 ))
             
             self.page.splash = None

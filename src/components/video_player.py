@@ -8,6 +8,7 @@ from ..models.channel import Channel
 from ..services.dlna_client import DLNACastService, DLNADevice
 from ..services.stream_proxy import get_stream_proxy
 from .track_selector import TrackSelector
+from .skeleton_loader import BufferingOverlay, ErrorOverlay
 
 
 class VideoPlayerComponent(ft.Column):
@@ -41,6 +42,19 @@ class VideoPlayerComponent(ft.Column):
         self._current_audio_track: int = 0
         self._current_subtitle_track: int = -1  # -1 = off
         
+        # Playback rate
+        self._playback_rate: float = 1.0
+        
+        # Error retry state
+        self._retry_count: int = 0
+        self._max_retries: int = 3
+        
+        # Extension fallback for series streams
+        # Many providers don't correctly report container_extension, so we try common formats
+        self._extension_fallbacks = ["mkv", "ts", "mp4", "avi"]
+        self._current_extension_index: int = 0
+        self._original_url: str = ""  # Store original URL for extension swapping
+        
         self._build_ui()
     
     def set_overlay_container(self, container: ft.Container):
@@ -69,6 +83,42 @@ class VideoPlayerComponent(ft.Column):
             color=ft.Colors.WHITE,
             size=14,
             weight=ft.FontWeight.W_600,
+        )
+        
+        # Audio track info badge
+        self._audio_track_info = ft.Container(
+            content=ft.Text(
+                "",
+                size=10,
+                color=ft.Colors.WHITE,
+            ),
+            bgcolor=ft.Colors.PURPLE_700,
+            border_radius=4,
+            padding=ft.padding.symmetric(horizontal=6, vertical=2),
+            visible=False,
+        )
+        
+        # Stream quality badge
+        self._quality_badge = ft.Container(
+            content=ft.Text(
+                "",
+                size=10,
+                color=ft.Colors.WHITE,
+                weight=ft.FontWeight.BOLD,
+            ),
+            bgcolor=ft.Colors.GREEN_700,
+            border_radius=4,
+            padding=ft.padding.symmetric(horizontal=6, vertical=2),
+            visible=False,
+        )
+        
+        # Connection status indicator
+        self._connection_status = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.WIFI_ROUNDED, size=12, color=ft.Colors.GREEN_400),
+                ft.Text("Connected", size=10, color=ft.Colors.GREEN_400),
+            ], spacing=4),
+            visible=False,
         )
         
         # Volume control (0-100 for app)
@@ -158,6 +208,61 @@ class VideoPlayerComponent(ft.Column):
             on_click=self._show_subtitle_selector,
         )
         
+        # Playback rate dropdown
+        self._playback_rate_dropdown = ft.Dropdown(
+            value="1.0",
+            width=85,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=8, vertical=4),
+            bgcolor="#2a2a3e",
+            border_color=ft.Colors.WHITE24,
+            focused_border_color=ft.Colors.PURPLE_400,
+            color=ft.Colors.WHITE,
+            options=[
+                ft.dropdown.Option("0.5", "0.5x"),
+                ft.dropdown.Option("0.75", "0.75x"),
+                ft.dropdown.Option("1.0", "1x"),
+                ft.dropdown.Option("1.25", "1.25x"),
+                ft.dropdown.Option("1.5", "1.5x"),
+                ft.dropdown.Option("2.0", "2x"),
+            ],
+            on_change=self._on_playback_rate_change,
+        )
+        
+        # Bandwidth throttle dropdown (for testing) - Default 512 KB/s
+        self._bandwidth_dropdown = ft.Dropdown(
+            value="512",  # Default to 512 KB/s
+            width=100,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=8, vertical=4),
+            bgcolor="#2a2a3e",
+            border_color=ft.Colors.ORANGE_400,  # Orange to indicate active throttle
+            focused_border_color=ft.Colors.ORANGE_400,
+            color=ft.Colors.WHITE,
+            hint_text="BW Limit",
+            options=[
+                ft.dropdown.Option("0", "Unlimited"),
+                ft.dropdown.Option("256", "256 KB/s"),
+                ft.dropdown.Option("512", "512 KB/s"),
+                ft.dropdown.Option("1024", "1 MB/s"),
+                ft.dropdown.Option("2048", "2 MB/s"),
+                ft.dropdown.Option("5120", "5 MB/s"),
+            ],
+            on_change=self._on_bandwidth_change,
+        )
+        
+        # Enable default bandwidth throttle
+        self._stream_proxy.set_bandwidth_limit(512)
+        
+        # Buffering overlay
+        self._buffering_overlay = BufferingOverlay()
+        
+        # Error overlay with retry
+        self._error_overlay = ErrorOverlay(
+            on_retry=self._retry_playback,
+            on_back=self._handle_error_back,
+        )
+        
         # Now playing bar with volume controls
         self._now_playing_bar = ft.Container(
             content=ft.Row(
@@ -169,6 +274,11 @@ class VideoPlayerComponent(ft.Column):
                     ),
                     ft.Container(width=8),
                     self._channel_info,
+                    ft.Container(width=8),
+                    self._audio_track_info,
+                    self._quality_badge,
+                    ft.Container(width=8),
+                    self._connection_status,
                     ft.Container(expand=True),
                     # App Volume
                     self._volume_icon,
@@ -190,6 +300,8 @@ class VideoPlayerComponent(ft.Column):
                     self._fullscreen_btn,
                     self._audio_btn,
                     self._subtitle_btn,
+                    self._playback_rate_dropdown,
+                    self._bandwidth_dropdown,
                     self._cast_btn,
                     self._mini_stop_btn,
                 ],
@@ -253,9 +365,16 @@ class VideoPlayerComponent(ft.Column):
             border_radius=16,
         )
         
-        # Video container with fixed background
+        # Video container with fixed background - now a Stack for overlays
         self._video_container = ft.Container(
-            content=self._video,
+            content=ft.Stack(
+                [
+                    self._video,
+                    self._buffering_overlay,
+                    self._error_overlay,
+                ],
+                expand=True,
+            ),
             expand=True,
             border_radius=16,
             bgcolor="#000000",
@@ -393,6 +512,11 @@ class VideoPlayerComponent(ft.Column):
     
     def play_channel(self, channel: Channel):
         """Start playing a channel."""
+        # Reset extension fallback state for new channel (unless we're mid-fallback)
+        if not self._original_url or self._original_url != channel.url:
+            self._current_extension_index = 0
+            self._original_url = ""
+        
         self._current_channel = channel
         
         # Update channel info text
@@ -439,8 +563,52 @@ class VideoPlayerComponent(ft.Column):
                 except:
                     break
             
+            # Determine the stream URL to use
+            stream_url = channel.url
+            
+            # If bandwidth throttling is enabled, route through proxy
+            if self._stream_proxy.is_throttle_enabled():
+                # Ensure proxy is running
+                if not self._stream_proxy.is_running():
+                    if self.page:
+                        self.page.run_task(self._start_proxy_and_play, channel)
+                        return
+                
+                # Register stream with proxy and get throttled URL
+                stream_url = self._stream_proxy.register_stream(channel.url)
+                print(f"Throttled stream URL: {stream_url}")
+            
             # ADD the new channel as the ONLY item
-            self._video.playlist_add(fv.VideoMedia(resource=channel.url))
+            # Only use special options for VOD/movie/series streams
+            # Live streams don't need these and they can cause issues
+            is_vod_or_series = (
+                "/movie/" in stream_url or 
+                "/series/" in stream_url or
+                getattr(channel, 'content_type', '') in ('movie', 'series')
+            )
+            
+            if is_vod_or_series:
+                # VOD/series: add headers and force-seekable for better compatibility
+                http_headers = {
+                    "User-Agent": "IPTV Smarters Pro/2.2.2.5 (Linux; Android 10)",
+                    "Accept": "*/*",
+                    "Connection": "keep-alive",
+                }
+                extras = {
+                    "force-seekable": "yes",  # Fix "force it with --force-seekable=yes" errors
+                    "cache": "yes",
+                    "cache-secs": "30",
+                }
+                media = fv.VideoMedia(
+                    resource=stream_url,
+                    http_headers=http_headers,
+                    extras=extras,
+                )
+            else:
+                # Live streams: no special options (was working before)
+                media = fv.VideoMedia(resource=stream_url)
+            
+            self._video.playlist_add(media)
             
             # JUMP to index 0 (the only item now)
             self._video.jump_to(0)
@@ -463,10 +631,45 @@ class VideoPlayerComponent(ft.Column):
             if self._on_error:
                 self._on_error(str(e))
 
+    async def _start_proxy_and_play(self, channel: Channel):
+        """Start the stream proxy and then play the channel."""
+        try:
+            await self._stream_proxy.start()
+            # Now play the channel (proxy is running)
+            self.play_channel(channel)
+        except Exception as e:
+            print(f"Proxy start error: {e}")
+            if self._on_error:
+                self._on_error(f"Failed to start stream proxy: {e}")
+
     
     def _on_video_loaded(self, e):
         """Handle video loaded event."""
         print(f"Video loaded! Data: {e.data if hasattr(e, 'data') else 'No Data'}")
+        
+        # Reset retry count on successful load
+        self._retry_count = 0
+        
+        # Reset extension fallback state on successful load
+        self._current_extension_index = 0
+        self._original_url = ""
+        
+        # Update connection status
+        self._update_connection_status(True, "Connected")
+        
+        # Detect quality from channel name
+        if self._current_channel:
+            name = self._current_channel.name.upper()
+            if "4K" in name or "UHD" in name or "2160" in name:
+                self._set_quality_badge("4K")
+            elif "FHD" in name or "1080" in name:
+                self._set_quality_badge("FHD")
+            elif "HD" in name or "720" in name:
+                self._set_quality_badge("HD")
+            elif "SD" in name or "480" in name:
+                self._set_quality_badge("SD")
+            else:
+                self._set_quality_badge("")  # Hide if unknown
             
         if self.page:
             self.page.update()
@@ -510,21 +713,162 @@ class VideoPlayerComponent(ft.Column):
     
     
     def _on_video_error(self, e):
-        """Handle video error event."""
-        if self._on_error:
-            self._on_error("Failed to load stream")
-            
-        # Add cast button to controls if video fails
-
-        # Check if cast button is already added to avoid duplicates
-        has_cast_btn = False
-        for ctrl in self.controls:
-             if isinstance(ctrl, ft.Container) and isinstance(ctrl.content, ft.Row):
-                  # This is likely the container we add below. Simplified check.
-                  pass
+        """Handle video error event with retry option."""
+        error_msg = "Failed to load stream"
+        error_detail = ""
         
-        # We'll just retry adding if not present, but safer to just let user use the main button.
-        pass
+        if hasattr(e, 'data') and e.data:
+            error_detail = str(e.data)[:100]
+        
+        # Check if this is a series stream and we can try another extension
+        current_url = self._current_channel.url if self._current_channel else ""
+        if "/series/" in current_url and self._try_next_extension():
+            # Trying another extension, don't show error yet
+            return
+        
+        # Show error overlay 
+        self._error_overlay.show(
+            message=error_msg,
+            detail=error_detail,
+            retry_attempt=self._retry_count,
+        )
+        
+        # Hide other overlays
+        self._loading_indicator.visible = False
+        self._buffering_overlay.hide()
+        
+        if self.page:
+            self.update()
+            
+        if self._on_error:
+            self._on_error(error_msg)
+    
+    def _try_next_extension(self) -> bool:
+        """Try playing with the next extension in the fallback list.
+        
+        Returns True if we're attempting a new extension, False if all exhausted.
+        """
+        if not self._current_channel:
+            return False
+        
+        url = self._current_channel.url
+        
+        # Only for series and movie (VOD) URLs from Xtream API
+        if "/series/" not in url and "/movie/" not in url:
+            return False
+        
+        # Store original URL on first failure
+        if not self._original_url:
+            self._original_url = url
+        
+        self._current_extension_index += 1
+        
+        if self._current_extension_index >= len(self._extension_fallbacks):
+            # All extensions tried, reset for future attempts
+            print(f"All extensions tried, giving up")
+            return False
+        
+        # Build new URL with next extension
+        new_ext = self._extension_fallbacks[self._current_extension_index]
+        
+        # Replace extension in original URL
+        import re
+        base_url = re.sub(r'\.[a-zA-Z0-9]+$', '', self._original_url)
+        new_url = f"{base_url}.{new_ext}"
+        
+        print(f"Extension fallback: trying {new_ext} -> {new_url}")
+        
+        # Update channel URL temporarily
+        self._current_channel.url = new_url
+        
+        # Show loading indicator and hide error
+        self._error_overlay.hide()
+        self._loading_indicator.visible = True
+        if self.page:
+            self.update()
+        
+        # Re-attempt playback with new URL
+        self.play_channel(self._current_channel)
+        return True
+    
+    def _on_playback_rate_change(self, e):
+        """Handle playback rate change."""
+        try:
+            rate = float(e.control.value)
+            self._playback_rate = rate
+            if self._video:
+                self._video.playback_rate = rate
+            if self.page:
+                self.page.update()
+        except Exception as ex:
+            print(f"Error changing playback rate: {ex}")
+    
+    def _on_bandwidth_change(self, e):
+        """Handle bandwidth limit change for testing."""
+        try:
+            limit_kbps = float(e.control.value)
+            self._stream_proxy.set_bandwidth_limit(limit_kbps)
+            
+            # Update dropdown border color to indicate active throttle
+            if limit_kbps > 0:
+                self._bandwidth_dropdown.border_color = ft.Colors.ORANGE_400
+                # Show notification
+                if self.page:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"🔽 Bandwidth limited to {int(limit_kbps)} KB/s"),
+                        bgcolor="#f97316",
+                    )
+                    self.page.snack_bar.open = True
+            else:
+                self._bandwidth_dropdown.border_color = ft.Colors.WHITE24
+                if self.page:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("✓ Bandwidth unlimited"),
+                        bgcolor="#22c55e",
+                    )
+                    self.page.snack_bar.open = True
+            
+            if self.page:
+                self.page.update()
+        except Exception as ex:
+            print(f"Error changing bandwidth: {ex}")
+    
+    def _retry_playback(self):
+        """Retry playing the current channel."""
+        if not self._current_channel:
+            return
+            
+        self._retry_count += 1
+        self._error_overlay.hide()
+        
+        if self._retry_count <= self._max_retries:
+            # Show loading indicator
+            self._loading_indicator.visible = True
+            if self.page:
+                self.update()
+            # Re-attempt playback
+            self.play_channel(self._current_channel)
+        else:
+            # Max retries exceeded
+            self._error_overlay.show(
+                message="Unable to connect",
+                detail="Maximum retry attempts reached. Please try again later.",
+                retry_attempt=self._retry_count,
+            )
+            if self.page:
+                self.update()
+    
+    def _handle_error_back(self):
+        """Handle back action from error overlay."""
+        self._error_overlay.hide()
+        self._retry_count = 0
+        # Reset extension fallback state
+        self._current_extension_index = 0
+        self._original_url = ""
+        self._video_container.visible = False
+        self._welcome.visible = True
+        if self.page:
+            self.update()
 
     async def _show_cast_dialog(self, e):
         """Show cast dialog using custom overlay."""
@@ -1048,5 +1392,60 @@ class VideoPlayerComponent(ft.Column):
         """Set available tracks for the current stream."""
         if audio_tracks is not None:
             self._audio_tracks = audio_tracks
+            # Update audio track info badge
+            self._update_audio_track_info()
         if subtitle_tracks is not None:
             self._subtitle_tracks = subtitle_tracks
+    
+    def _update_audio_track_info(self):
+        """Update the audio track info badge in header."""
+        if self._audio_tracks and len(self._audio_tracks) > 0:
+            current_track = self._audio_tracks[self._current_audio_track] if self._current_audio_track < len(self._audio_tracks) else self._audio_tracks[0]
+            track_name = current_track.get('title', current_track.get('language', f'Track {self._current_audio_track + 1}'))
+            # Shorten long names
+            if len(track_name) > 12:
+                track_name = track_name[:10] + "..."
+            self._audio_track_info.content.value = f"🔊 {track_name}"
+            self._audio_track_info.visible = True
+        else:
+            self._audio_track_info.visible = False
+        
+        if self.page:
+            self._audio_track_info.update()
+    
+    def _update_connection_status(self, connected: bool, message: str = ""):
+        """Update connection status indicator."""
+        if connected:
+            self._connection_status.content.controls[0].name = ft.Icons.WIFI_ROUNDED
+            self._connection_status.content.controls[0].color = ft.Colors.GREEN_400
+            self._connection_status.content.controls[1].value = message or "Connected"
+            self._connection_status.content.controls[1].color = ft.Colors.GREEN_400
+        else:
+            self._connection_status.content.controls[0].name = ft.Icons.WIFI_OFF_ROUNDED
+            self._connection_status.content.controls[0].color = ft.Colors.ORANGE_400
+            self._connection_status.content.controls[1].value = message or "Reconnecting..."
+            self._connection_status.content.controls[1].color = ft.Colors.ORANGE_400
+        
+        self._connection_status.visible = True
+        if self.page:
+            self._connection_status.update()
+    
+    def _set_quality_badge(self, quality: str):
+        """Set the stream quality badge."""
+        if quality:
+            self._quality_badge.content.value = quality
+            # Color based on quality
+            if "4K" in quality or "2160" in quality:
+                self._quality_badge.bgcolor = ft.Colors.PURPLE_700
+            elif "HD" in quality or "1080" in quality:
+                self._quality_badge.bgcolor = ft.Colors.BLUE_700
+            elif "720" in quality:
+                self._quality_badge.bgcolor = ft.Colors.GREEN_700
+            else:
+                self._quality_badge.bgcolor = ft.Colors.GREY_700
+            self._quality_badge.visible = True
+        else:
+            self._quality_badge.visible = False
+        
+        if self.page:
+            self._quality_badge.update()

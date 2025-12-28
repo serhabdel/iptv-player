@@ -55,6 +55,15 @@ class PlayerView(ft.Container):
             color=ft.Colors.WHITE54,
         )
         
+        # Favorite button
+        self._favorite_button = ft.IconButton(
+            icon=ft.Icons.FAVORITE_BORDER_ROUNDED,
+            icon_color=ft.Colors.WHITE38,
+            icon_size=24,
+            tooltip="Add to favorites",
+            on_click=self._toggle_favorite,
+        )
+        
         self._build_ui()
     
     def _build_ui(self):
@@ -100,6 +109,8 @@ class PlayerView(ft.Container):
                     ),
                     ft.Row(
                         [
+                            # Favorite toggle
+                            self._favorite_button,
                             # Previous channel
                             ft.IconButton(
                                 icon=ft.Icons.SKIP_PREVIOUS_ROUNDED,
@@ -184,6 +195,9 @@ class PlayerView(ft.Container):
         self._channel_name_text.value = channel.name
         self._channel_group_text.value = channel.group
         
+        # Update favorite button state
+        self._update_favorite_button(channel)
+        
         # Play the channel
         self._video_player.play_channel(channel)
     
@@ -193,6 +207,22 @@ class PlayerView(ft.Container):
              self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Playback Error: {error}"))
              self.page.snack_bar.open = True
              self.page.update()
+    
+    def _toggle_favorite(self, e):
+        """Toggle favorite status of current channel."""
+        current = self._state.get_current_channel()
+        if current:
+            is_fav = self._state.toggle_favorite(current)
+            self._update_favorite_button(current)
+            if self.page:
+                self._favorite_button.update()
+    
+    def _update_favorite_button(self, channel: Channel):
+        """Update favorite button appearance based on channel state."""
+        is_fav = self._state.is_favorite(channel)
+        self._favorite_button.icon = ft.Icons.FAVORITE_ROUNDED if is_fav else ft.Icons.FAVORITE_BORDER_ROUNDED
+        self._favorite_button.icon_color = ft.Colors.PINK_400 if is_fav else ft.Colors.WHITE38
+        self._favorite_button.tooltip = "Remove from favorites" if is_fav else "Add to favorites"
     
     def _on_next_channel(self):
         """Navigate to next channel."""

@@ -90,7 +90,73 @@ class DLNACastService:
         except Exception:
             await self._basic_ssdp_discovery()
         
+        # Also try direct Samsung TV discovery (for TVs that don't respond to SSDP)
+        await self._discover_samsung_tvs_direct()
+        
         return self._devices
+    
+    async def _discover_samsung_tvs_direct(self):
+        """Direct Samsung TV discovery by scanning known ports."""
+        import httpx
+        
+        # Get local network prefix
+        local_ip = self._get_local_ip()
+        if not local_ip:
+            return
+        
+        network_prefix = ".".join(local_ip.split(".")[:3]) + "."
+        
+        async def check_samsung_tv(ip: str):
+            """Check if IP is a Samsung TV with DLNA support."""
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=0.5)) as client:
+                    # Check Samsung DLNA DMR endpoint
+                    dmr_url = f"http://{ip}:9197/dmr"
+                    response = await client.get(dmr_url)
+                    
+                    if response.status_code == 200 and "MediaRenderer" in response.text:
+                        # Parse the device info
+                        import re
+                        name_match = re.search(r'<friendlyName>([^<]+)</friendlyName>', response.text)
+                        udn_match = re.search(r'<UDN>([^<]+)</UDN>', response.text)
+                        
+                        name = name_match.group(1) if name_match else f"Samsung TV ({ip})"
+                        udn = udn_match.group(1) if udn_match else f"uuid:{ip}"
+                        
+                        device = DLNADevice(
+                            name=name,
+                            location=dmr_url,
+                            udn=udn,
+                            device_type="MediaRenderer",
+                        )
+                        
+                        if device not in self._devices:
+                            self._devices.append(device)
+                            for callback in self._discovery_callbacks:
+                                callback(device)
+                            print(f"Found Samsung TV: {name} @ {ip}")
+            except Exception:
+                pass
+        
+        # Scan all IPs in the network simultaneously in chunks
+        all_ips = [f"{network_prefix}{i}" for i in range(1, 255)]
+        
+        # Scan in larger batches for speed
+        batch_size = 64
+        for i in range(0, len(all_ips), batch_size):
+            batch = all_ips[i:i + batch_size]
+            await asyncio.gather(*[check_samsung_tv(ip) for ip in batch], return_exceptions=True)
+    
+    def _get_local_ip(self) -> str:
+        """Get the local IP address."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return ""
     
     async def _get_device_name(self, location: str, requester=None) -> Optional[str]:
         """Get device friendly name from its description XML."""

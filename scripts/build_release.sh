@@ -10,7 +10,7 @@ set -e
 #   This script focuses on the requested .deb rebuild.
 
 APP_NAME="iptv-player"
-VERSION="1.0.0"
+VERSION="1.1.1"
 BUILD_DIR="build_deb"
 DIST_DIR="dist"
 ASSETS_DIR="assets"

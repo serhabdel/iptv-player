@@ -9,7 +9,10 @@ from typing import Dict
 
 
 class StreamProxyServer:
-    """Local HTTP proxy server that relays IPTV streams for DLNA casting."""
+    """Local HTTP proxy server that relays IPTV streams for DLNA casting.
+    
+    Supports bandwidth throttling for testing purposes.
+    """
     
     def __init__(self, port: int = 8899):
         self.port = port
@@ -19,6 +22,10 @@ class StreamProxyServer:
         self._site: Optional[web.TCPSite] = None
         self._running = False
         self._local_ip: Optional[str] = None
+        
+        # Bandwidth throttling (0 = unlimited)
+        self._bandwidth_limit_kbps: float = 0  # KB/s limit
+        self._throttle_enabled: bool = False
     
     def get_local_ip(self) -> str:
         """Get the local IP address of this machine."""
@@ -56,6 +63,37 @@ class StreamProxyServer:
         """Get the proxy URL for the 'current' stream."""
         local_ip = self.get_local_ip()
         return f"http://{local_ip}:{self.port}/stream/current"
+    
+    # ========================
+    # Bandwidth Throttling API
+    # ========================
+    
+    def set_bandwidth_limit(self, limit_kbps: float):
+        """Set bandwidth limit in KB/s. Set to 0 for unlimited.
+        
+        Args:
+            limit_kbps: Bandwidth limit in kilobytes per second
+                       Common values: 500 (SD), 1000 (720p), 2500 (1080p), 5000 (4K)
+        """
+        self._bandwidth_limit_kbps = max(0, limit_kbps)
+        self._throttle_enabled = limit_kbps > 0
+        print(f"Bandwidth limit: {limit_kbps} KB/s" if limit_kbps > 0 else "Bandwidth: Unlimited")
+    
+    def set_bandwidth_limit_mbps(self, limit_mbps: float):
+        """Set bandwidth limit in MB/s."""
+        self.set_bandwidth_limit(limit_mbps * 1024)
+    
+    def get_bandwidth_limit(self) -> float:
+        """Get current bandwidth limit in KB/s."""
+        return self._bandwidth_limit_kbps
+    
+    def is_throttle_enabled(self) -> bool:
+        """Check if bandwidth throttling is enabled."""
+        return self._throttle_enabled
+    
+    def disable_throttle(self):
+        """Disable bandwidth throttling."""
+        self.set_bandwidth_limit(0)
     
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
         """Handle stream requests by proxying the IPTV stream."""
@@ -128,9 +166,32 @@ class StreamProxyServer:
             
             async with ClientSession(timeout=timeout) as session:
                 async with session.get(current_url, headers=headers) as upstream:
-                    # Use larger chunk size (1MB) for better throughput on high-quality streams
-                    async for chunk in upstream.content.iter_chunked(1024 * 1024):
+                    # Choose chunk size based on throttling
+                    if self._throttle_enabled:
+                        # Smaller chunks for better throttle precision
+                        chunk_size = min(32 * 1024, int(self._bandwidth_limit_kbps * 1024 / 4))
+                        chunk_size = max(chunk_size, 4096)  # Min 4KB
+                    else:
+                        # Large chunks for better throughput 
+                        chunk_size = 1024 * 1024  # 1MB
+                    
+                    bytes_sent = 0
+                    start_time = asyncio.get_event_loop().time()
+                    
+                    async for chunk in upstream.content.iter_chunked(chunk_size):
                         try:
+                            # Throttle if enabled
+                            if self._throttle_enabled and self._bandwidth_limit_kbps > 0:
+                                bytes_sent += len(chunk)
+                                elapsed = asyncio.get_event_loop().time() - start_time
+                                
+                                # Calculate expected time for bytes sent
+                                expected_time = bytes_sent / (self._bandwidth_limit_kbps * 1024)
+                                
+                                # Sleep if we're ahead of schedule
+                                if expected_time > elapsed:
+                                    await asyncio.sleep(expected_time - elapsed)
+                            
                             await response.write(chunk)
                         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
                             # Client disconnected, stop streaming
