@@ -1,4 +1,5 @@
 flet>=0.25.0
+flet-desktop
 flet-video
 httpx
 aiofiles
