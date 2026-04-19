@@ -3,8 +3,6 @@ name: Build IPTV Player
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -12,8 +10,51 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_REPOSITORY: serhabdel/iptv-player
+
 jobs:
+  detect-release:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.detect.outputs.should_release }}
+      version: ${{ steps.detect.outputs.version }}
+      tag: ${{ steps.detect.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect release trigger
+        id: detect
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$version" ]; then
+            echo "VERSION file is empty."
+            exit 1
+          fi
+
+          should_release=false
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            should_release=true
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              if git diff --name-only HEAD^ HEAD | grep -Fxq "VERSION"; then
+                should_release=true
+              fi
+            else
+              should_release=true
+            fi
+          fi
+
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
   build-windows:
+    needs: detect-release
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +80,7 @@ jobs:
           path: dist/iptv-player.exe
 
   build-linux-deb:
+    needs: detect-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,12 +105,12 @@ jobs:
           mkdir -p deb_package/usr/bin
           mkdir -p deb_package/usr/share/applications
           mkdir -p deb_package/usr/share/icons/hicolor/256x256/apps
-          
+
           cp dist/iptv-player deb_package/usr/bin/
           chmod +x deb_package/usr/bin/iptv-player
-          
+
           cp assets/logo.png deb_package/usr/share/icons/hicolor/256x256/apps/iptv-player.png
-          
+
           cat > deb_package/DEBIAN/control << EOF
           Package: iptv-player
           Version: ${GITHUB_REF_NAME:-1.0.0}
@@ -80,7 +122,7 @@ jobs:
            A modern IPTV player built with Python and Flet.
            Supports M3U playlists and Xtream Codes API.
           EOF
-          
+
           cat > deb_package/usr/share/applications/iptv-player.desktop << EOF
           [Desktop Entry]
           Name=IPTV Player
@@ -91,7 +133,7 @@ jobs:
           Type=Application
           Categories=AudioVideo;Video;Player;
           EOF
-          
+
           dpkg-deb --build deb_package iptv-player.deb
 
       - name: Upload Debian artifact
@@ -101,6 +143,7 @@ jobs:
           path: iptv-player.deb
 
   build-linux-appimage:
+    needs: detect-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,19 +164,17 @@ jobs:
 
       - name: Create AppImage
         run: |
-          # Download appimagetool
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
-          
-          # Create AppDir structure
+
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-          
+
           cp dist/iptv-player AppDir/usr/bin/
           chmod +x AppDir/usr/bin/iptv-player
           cp assets/logo.png AppDir/usr/share/icons/hicolor/256x256/apps/iptv-player.png
           cp assets/logo.png AppDir/iptv-player.png
-          
+
           cat > AppDir/iptv-player.desktop << EOF
           [Desktop Entry]
           Name=IPTV Player
@@ -144,7 +185,7 @@ jobs:
           Type=Application
           Categories=AudioVideo;Video;Player;
           EOF
-          
+
           cat > AppDir/AppRun << 'APPRUN'
           #!/bin/bash
           SELF=$(readlink -f "$0")
@@ -152,8 +193,7 @@ jobs:
           exec "${HERE}/usr/bin/iptv-player" "$@"
           APPRUN
           chmod +x AppDir/AppRun
-          
-          # Build AppImage
+
           ./appimagetool-x86_64.AppImage AppDir IPTV-Player-x86_64.AppImage
 
       - name: Upload AppImage artifact
@@ -163,6 +203,7 @@ jobs:
           path: IPTV-Player-x86_64.AppImage
 
   build-macos:
+    needs: detect-release
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -181,8 +222,7 @@ jobs:
       - name: Build with PyInstaller
         run: |
           pyinstaller --onefile --windowed --name "IPTV Player" main.py
-          
-          # Create DMG for easier distribution
+
           mkdir -p dmg_contents
           cp -r "dist/IPTV Player.app" dmg_contents/ 2>/dev/null || cp dist/"IPTV Player" dmg_contents/
           hdiutil create -volname "IPTV Player" -srcfolder dmg_contents -ov -format UDZO IPTV-Player.dmg
@@ -194,23 +234,29 @@ jobs:
           path: IPTV-Player.dmg
 
   release:
-    needs: [build-windows, build-linux-deb, build-linux-appimage, build-macos]
+    needs: [detect-release, build-windows, build-linux-deb, build-linux-appimage, build-macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.detect-release.outputs.should_release == 'true' && github.repository == 'serhabdel/iptv-player'
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Create Release
+      - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v1
         with:
+          repository: ${{ env.RELEASE_REPOSITORY }}
+          tag_name: ${{ needs.detect-release.outputs.tag }}
+          name: IPTV Player ${{ needs.detect-release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
           files: |
             artifacts/iptv-player-windows/iptv-player.exe
             artifacts/iptv-player-linux-deb/iptv-player.deb
             artifacts/iptv-player-linux-appimage/IPTV-Player-x86_64.AppImage
             artifacts/iptv-player-macos/IPTV-Player.dmg
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

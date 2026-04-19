@@ -1,7 +1,7 @@
 """Settings view for managing playlists and preferences."""
 import flet as ft
 import asyncio
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 from ..services.state_manager import StateManager
 from ..services.m3u_parser import M3UParser
 from ..services.xtream_client import XtreamCodesClient, XtreamCredentials
@@ -647,7 +647,7 @@ class SettingsView(ft.Container):
             if self.page:
                 self.page.update()
     
-    async def _on_file_picked(self, e: ft.FilePickerResultEvent):
+    async def _on_file_picked(self, e: Any):
         """Handle file picker result."""
         if not e.files:
             return
