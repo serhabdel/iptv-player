@@ -64,6 +64,8 @@ jobs:
   build-windows:
     needs: detect-release
     runs-on: windows-latest
+    env:
+      APP_VERSION: ${{ needs.detect-release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -81,11 +83,25 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller iptv-player.spec
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Windows installer
+        shell: powershell
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" "scripts\windows\iptv-player.iss"
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-player-windows
+          name: iptv-player-windows-portable
           path: dist/iptv-player.exe
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-player-windows-installer
+          path: dist/IPTV-Player-Setup-v${{ env.APP_VERSION }}.exe
 
   build-linux-deb:
     needs: detect-release
@@ -273,7 +289,8 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/iptv-player-windows/iptv-player.exe
+            artifacts/iptv-player-windows-portable/iptv-player.exe
+            artifacts/iptv-player-windows-installer/IPTV-Player-Setup-v${{ needs.detect-release.outputs.version }}.exe
             artifacts/iptv-player-linux-deb/iptv-player.deb
             artifacts/iptv-player-linux-appimage/IPTV-Player-x86_64.AppImage
             artifacts/iptv-player-macos/IPTV-Player.dmg

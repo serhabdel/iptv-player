@@ -1,0 +1,45 @@
+#define MyAppName "IPTV Player"
+#define MyAppPublisher "Abdelhalim Serhani"
+#define MyAppURL "https://github.com/serhabdel/iptv-player"
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
+#define MyAppVersion AppVersion
+#define MyAppExeName "iptv-player.exe"
+
+[Setup]
+AppId={{8A8F6A02-3581-4E5D-AF58-B3A3CB2490A1}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+DisableProgramGroupPage=yes
+LicenseFile=LICENSE
+PrivilegesRequired=lowest
+OutputDir=dist
+OutputBaseFilename=IPTV-Player-Setup-v{#MyAppVersion}
+Compression=lzma
+SolidCompression=yes
+WizardStyle=modern
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+
+[Files]
+Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent

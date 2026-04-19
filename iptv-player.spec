@@ -1,12 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files
+
+
+flet_datas = collect_data_files('flet')
+flet_desktop_datas = collect_data_files('flet_desktop')
+flet_video_datas = collect_data_files('flet_video')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('src', 'src'), ('LICENSE', '.')],
-    hiddenimports=[],
+    datas=[('assets', 'assets'), ('src', 'src'), ('LICENSE', '.')] + flet_datas + flet_desktop_datas + flet_video_datas,
+    hiddenimports=['flet_desktop', 'flet_video'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
