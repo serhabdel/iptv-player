@@ -700,27 +700,39 @@ class VideoPlayerComponent(ft.Column):
                 # Live streams: no special options (was working before)
                 media = fv.VideoMedia(resource=stream_url)
             
-            add_ok = await self._video_call(
-                "playlist_add",
-                lambda: self._video.playlist_add(media),
-                timeout=10.0 * _TIMEOUT_MULT,
-                required=False,
-                retries=2,
-            )
+            # Make video container visible BEFORE loading media so the native
+            # control is mounted and can respond to invoke_method calls.
+            self._loading_indicator.visible = False
+            self._video_container.visible = True
+            if self.page:
+                self.page.update()
+            await asyncio.sleep(0.1)
             
-            if not add_ok:
-                # Playlist add timed out – try a direct resource assignment as fallback
-                print("playlist_add failed; falling back to direct playlist assignment")
-                try:
-                    self._video.playlist = [media]
-                    if self.page:
-                        self._video.update()
-                    await asyncio.sleep(0.15 if _IS_WINDOWS else 0.1)
-                except Exception as ex:
-                    print(f"Direct playlist assignment also failed: {ex}")
-                    raise RuntimeError("Cannot load media into player") from ex
+            if request_id != self._play_request_id:
+                return
             
-            # JUMP to index 0 (the only item now)
+            # Use direct playlist property assignment as primary method.
+            # This avoids invoke_method listener timeout issues on Windows.
+            try:
+                self._video.playlist = [media]
+                self._video.autoplay = True
+                if self.page:
+                    self._video.update()
+                await asyncio.sleep(0.2)
+            except Exception as ex:
+                # Fallback to playlist_add if direct assignment fails
+                print(f"Direct playlist assignment failed ({ex}), trying playlist_add")
+                add_ok = await self._video_call(
+                    "playlist_add",
+                    lambda: self._video.playlist_add(media),
+                    timeout=12.0 * _TIMEOUT_MULT,
+                    required=False,
+                    retries=2,
+                )
+                if not add_ok:
+                    raise RuntimeError("Cannot load media into player")
+            
+            # JUMP to index 0
             await self._video_call("jump_to", lambda: self._video.jump_to(0), timeout=3.0 * _TIMEOUT_MULT)
             
             # PLAY
@@ -732,10 +744,6 @@ class VideoPlayerComponent(ft.Column):
                 retries=2,
             )
             self._is_playing = True
-            
-            # Show video container
-            self._loading_indicator.visible = False
-            self._video_container.visible = True
             
             if self.page:
                 self.page.update()

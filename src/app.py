@@ -184,8 +184,8 @@ class IPTVApp:
         """Show series detail view with transition."""
         self._navigation_stack.append(self._current_view)
         self._current_view = "series"
-        self._series_view.load_series(series_name, episodes)
         self._animate_view_switch(self._series_view)
+        self._series_view.load_series(series_name, episodes)
         
     def _play_series_episode(self, channel):
         """Play an episode from series view."""
