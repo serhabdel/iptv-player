@@ -2,6 +2,7 @@
 import flet as ft
 from typing import Optional, Callable
 from ..services.state_manager import StateManager
+from ..models.channel import Channel
 
 
 class HubView(ft.Container):
@@ -402,12 +403,28 @@ class HubView(ft.Container):
     
     def _play_continue_watching(self, url: str):
         """Play a continue watching item (will auto-resume from saved position)."""
+        if not self._on_play_channel:
+            return
+        
+        # Try to find channel in loaded playlists
         channels = self.state.get_all_channels()
         for channel in channels:
             if channel.url == url:
-                if self._on_play_channel:
-                    self._on_play_channel(channel)
-                break
+                self._on_play_channel(channel)
+                return
+        
+        # Channel not in playlists (e.g. dynamically loaded series episode).
+        # Reconstruct from saved position metadata.
+        saved = self.state.get_playback_position(url)
+        if saved:
+            channel = Channel(
+                name=saved.get("name", "Unknown"),
+                url=url,
+                logo=saved.get("logo", ""),
+                group=saved.get("group", ""),
+                content_type=saved.get("content_type", "movie"),
+            )
+            self._on_play_channel(channel)
     
     def _build_favorites_section(self) -> Optional[ft.Container]:
         """Build favorites section if there are items."""
@@ -605,18 +622,28 @@ class HubView(ft.Container):
     
     def _play_recently_viewed(self, url: str):
         """Play a recently viewed item directly."""
-        # Find channel by URL and play directly
+        if not self._on_play_channel:
+            return
+        
+        # Find channel in loaded playlists
         channels = self.state.get_all_channels()
         for channel in channels:
             if channel.url == url:
-                if self._on_play_channel:
-                    # Play directly
-                    self._on_play_channel(channel)
-                elif self._on_hub_select:
-                    # Fallback: Navigate to appropriate content type
-                    content_type = getattr(channel, 'content_type', 'live')
-                    self._on_hub_select(content_type)
-                break
+                self._on_play_channel(channel)
+                return
+        
+        # Not in playlists -- reconstruct from recently viewed data
+        for item in self.state.get_recently_viewed(limit=150):
+            if item.get("url") == url:
+                channel = Channel(
+                    name=item.get("name", "Unknown"),
+                    url=url,
+                    logo=item.get("logo", ""),
+                    group=item.get("group", ""),
+                    content_type=item.get("content_type", "live"),
+                )
+                self._on_play_channel(channel)
+                return
     
     def refresh(self):
         """Refresh the view."""
