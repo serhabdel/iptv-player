@@ -690,8 +690,11 @@ class ContentView(ft.Container):
         await asyncio.sleep(0.15)  # Brief delay for skeleton to show
         self._load_channels()
         self._update_content_grid()
-        if self.page:
-            self.page.update()
+        try:
+            if self.page:
+                self.page.update()
+        except RuntimeError:
+            pass  # Session may be destroyed during view transitions
     
     def refresh(self):
         """Refresh the content view."""

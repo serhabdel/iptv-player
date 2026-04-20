@@ -301,9 +301,12 @@ class IPTVApp:
     def _on_keyboard(self, e: ft.KeyboardEvent):
         """Handle global keyboard events."""
         if e.key == "Escape" or e.key == "Backspace":
-            self._go_back()
+            if self._current_view == "player":
+                # Delegate to player view so it can save position and stop
+                self._player_view._handle_back_click(None)
+            elif self._current_view != "hub":
+                self._go_back()
         elif e.key == "H" and e.ctrl:
-            # Ctrl+H: Go to hub
             self._show_hub()
     
     async def _initial_load(self):
