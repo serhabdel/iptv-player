@@ -8,6 +8,7 @@
 #define MyAppExeName "iptv-player.exe"
 
 [Setup]
+SourceDir=..\..
 AppId={{8A8F6A02-3581-4E5D-AF58-B3A3CB2490A1}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -33,9 +34,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Files]
-Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\iptv-player\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "assets\logo.png"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

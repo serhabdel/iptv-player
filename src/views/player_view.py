@@ -35,7 +35,7 @@ class PlayerView(ft.Container):
         self._cast_overlay = ft.Container(
             visible=False,
             expand=True,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
         )
         # Pass overlay to video player
         self._video_player.set_overlay_container(self._cast_overlay)
@@ -65,6 +65,14 @@ class PlayerView(ft.Container):
         )
         
         self._build_ui()
+
+    def _safe_update(self) -> bool:
+        """Safely update only when this control is attached to the page tree."""
+        try:
+            self.update()
+            return True
+        except Exception:
+            return False
     
     def _build_ui(self):
         """Build the player view."""
@@ -92,10 +100,10 @@ class PlayerView(ft.Container):
                                 border_radius=10,
                                 gradient=ft.LinearGradient(
                                     colors=[ft.Colors.PURPLE_700, ft.Colors.PURPLE_400],
-                                    begin=ft.alignment.top_left,
-                                    end=ft.alignment.bottom_right,
+                                    begin=ft.Alignment.TOP_LEFT,
+                                    end=ft.Alignment.BOTTOM_RIGHT,
                                 ),
-                                alignment=ft.alignment.center,
+                                alignment=ft.Alignment.CENTER,
                             ),
                             ft.Column(
                                 [
@@ -166,7 +174,7 @@ class PlayerView(ft.Container):
             self._channel_name_text.value = current.name
             self._channel_group_text.value = current.group
         if self.page:
-            self.update()
+                self._safe_update()
     
     def _handle_back_click(self, e):
         """Handle back button click."""
@@ -215,7 +223,7 @@ class PlayerView(ft.Container):
             is_fav = self._state.toggle_favorite(current)
             self._update_favorite_button(current)
             if self.page:
-                self._favorite_button.update()
+                    self._safe_update()
     
     def _update_favorite_button(self, channel: Channel):
         """Update favorite button appearance based on channel state."""

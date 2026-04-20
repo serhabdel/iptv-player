@@ -92,13 +92,13 @@ class ChannelList(ft.Container):
         # Load more button
         self._load_more_btn = ft.Container(
             content=ft.ElevatedButton(
-                text="Load More",
+                content="Load More",
                 icon=ft.Icons.EXPAND_MORE_ROUNDED,
                 bgcolor=ft.Colors.PURPLE_700,
                 color=ft.Colors.WHITE,
                 on_click=self._load_more,
             ),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             padding=ft.padding.symmetric(vertical=12),
             visible=False,
         )
@@ -455,7 +455,7 @@ class ChannelList(ft.Container):
                 src=channel.logo,
                 width=32,
                 height=32,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
                 error_content=ft.Icon(
                     self._get_channel_icon(channel),
                     color=ft.Colors.WHITE54,
@@ -475,7 +475,7 @@ class ChannelList(ft.Container):
             height=44,
             border_radius=10,
             bgcolor="#1a1a2e",
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
         )
         
         # Clean display name

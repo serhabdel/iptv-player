@@ -28,6 +28,8 @@ class IPTVApp:
     
     def _setup_page(self):
         """Configure the page settings."""
+        import sys
+        
         self.page.title = "IPTV Player"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = "#0a0a0f"
@@ -41,10 +43,18 @@ class IPTVApp:
         self.page.window.min_height = 600
         self.page.window.title_bar_hidden = False
         
+        # Platform-specific font selection
+        if sys.platform == "win32":
+            font_family = "Segoe UI"
+        elif sys.platform == "darwin":
+            font_family = "SF Pro Display"
+        else:
+            font_family = "Segoe UI"
+        
         # Theme
         self.page.theme = ft.Theme(
             color_scheme_seed=ft.Colors.PURPLE,
-            font_family="Segoe UI",
+            font_family=font_family,
         )
         
         # Keyboard handler for global shortcuts
@@ -118,15 +128,15 @@ class IPTVApp:
         self._navigation_stack.append(self._current_view)
         self._current_view = "content"
         self._current_content_type = content_type
-        self._content_view.set_content_type(content_type)
         self._animate_view_switch(self._content_view)
+        self._content_view.set_content_type(content_type)
     
     def _show_player(self):
         """Show the player view with transition."""
         self._navigation_stack.append(self._current_view)
         self._current_view = "player"
-        self._player_view.refresh()
         self._animate_view_switch(self._player_view)
+        self._player_view.refresh()
     
     def _show_settings(self):
         """Show settings view with transition."""
@@ -149,8 +159,8 @@ class IPTVApp:
                 self._animate_view_switch(self._content_view)
             elif previous == "player":
                 self._current_view = "player"
-                self._player_view.refresh()
                 self._animate_view_switch(self._player_view)
+                self._player_view.refresh()
             elif previous == "series":
                 self._current_view = "series"
                 self._animate_view_switch(self._series_view)

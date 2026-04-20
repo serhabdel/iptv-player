@@ -1,4 +1,5 @@
 """Video player component for IPTV streams."""
+import sys
 import flet as ft
 import flet_video as fv
 import subprocess
@@ -9,6 +10,11 @@ from ..services.dlna_client import DLNACastService, DLNADevice
 from ..services.stream_proxy import get_stream_proxy
 from .track_selector import TrackSelector
 from .skeleton_loader import BufferingOverlay, ErrorOverlay
+
+# Platform-aware timeout multipliers - Windows media subsystem is slower
+_IS_WINDOWS = sys.platform == "win32"
+_IS_MACOS = sys.platform == "darwin"
+_TIMEOUT_MULT = 1.5 if _IS_WINDOWS else 1.0
 
 
 class VideoPlayerComponent(ft.Column):
@@ -48,6 +54,8 @@ class VideoPlayerComponent(ft.Column):
         # Error retry state
         self._retry_count: int = 0
         self._max_retries: int = 3
+        self._play_request_id: int = 0
+        self._video_op_lock = asyncio.Lock()
         
         # Extension fallback for series streams
         # Many providers don't correctly report container_extension, so we try common formats
@@ -73,10 +81,10 @@ class VideoPlayerComponent(ft.Column):
             autoplay=True,
             filter_quality=ft.FilterQuality.HIGH,
             show_controls=True,
-            fit=ft.ImageFit.CONTAIN,
-            on_loaded=self._on_video_loaded,
+            fit=ft.BoxFit.CONTAIN,
+            on_load=self._on_video_loaded,
             on_error=self._on_video_error,
-            on_track_changed=self._on_track_changed,
+            on_track_change=self._on_track_changed,
         )
         
         self._channel_info = ft.Text(
@@ -227,17 +235,17 @@ class VideoPlayerComponent(ft.Column):
                 ft.dropdown.Option("1.5", "1.5x"),
                 ft.dropdown.Option("2.0", "2x"),
             ],
-            on_change=self._on_playback_rate_change,
+            on_select=self._on_playback_rate_change,
         )
         
         # Bandwidth throttle dropdown (for testing) - Default 512 KB/s
         self._bandwidth_dropdown = ft.Dropdown(
-            value="512",  # Default to 512 KB/s
+            value="0",  # Default to Unlimited
             width=100,
             text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=4),
             bgcolor="#2a2a3e",
-            border_color=ft.Colors.ORANGE_400,  # Orange to indicate active throttle
+            border_color=ft.Colors.WHITE24,
             focused_border_color=ft.Colors.ORANGE_400,
             color=ft.Colors.WHITE,
             hint_text="BW Limit",
@@ -249,11 +257,11 @@ class VideoPlayerComponent(ft.Column):
                 ft.dropdown.Option("2048", "2 MB/s"),
                 ft.dropdown.Option("5120", "5 MB/s"),
             ],
-            on_change=self._on_bandwidth_change,
+            on_select=self._on_bandwidth_change,
         )
         
-        # Enable default bandwidth throttle
-        self._stream_proxy.set_bandwidth_limit(512)
+        # Default: unlimited bandwidth (no throttling)
+        self._stream_proxy.set_bandwidth_limit(0)
         
         # Buffering overlay
         self._buffering_overlay = BufferingOverlay()
@@ -334,7 +342,7 @@ class VideoPlayerComponent(ft.Column):
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             expand=True,
             bgcolor="#0a0a12",
             border_radius=16,
@@ -360,7 +368,7 @@ class VideoPlayerComponent(ft.Column):
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             expand=True,
             bgcolor="#0a0a12",
             border_radius=16,
@@ -381,7 +389,7 @@ class VideoPlayerComponent(ft.Column):
             bgcolor="#000000",
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
             visible=False,
-            alignment=ft.alignment.center,  # Center video to avoid black bars on one side
+            alignment=ft.Alignment.CENTER,  # Center video to avoid black bars on one side
         )
         
         # Cast Overlay Controls
@@ -396,7 +404,7 @@ class VideoPlayerComponent(ft.Column):
             value=False,
             active_color=ft.Colors.PURPLE_400,
             tooltip="Keep playing on PC while casting (Sync Playback)",
-            label_style=ft.TextStyle(color=ft.Colors.WHITE70, size=12),
+            label_text_style=ft.TextStyle(color=ft.Colors.WHITE70, size=12),
         )
         
         # Casting Controls (Play/Pause, Next/Prev)
@@ -500,20 +508,87 @@ class VideoPlayerComponent(ft.Column):
             
     def stop(self):
         """Stop playback and reset state."""
-        if self._video:
-            try:
-                self._video.pause()
-                # Optional: seek to 0 or clear playlist
-            except:
-                pass
+        if self._video and self.page:
+            self.page.run_task(self._stop_video_async)
         self._is_playing = False
         self._loading_indicator.visible = False
         self._now_playing_bar.visible = False
         if self.page:
             self.page.update()
+
+    async def _stop_video_async(self):
+        """Stop/pause video safely using async flet-video methods."""
+        if not self._video or not self._is_playing:
+            return
+        await self._video_call("pause", lambda: self._video.pause(), timeout=1.5, use_lock=False)
+
+    async def _video_call(
+        self,
+        name: str,
+        coro_factory,
+        timeout: float = 2.5,
+        required: bool = False,
+        retries: int = 1,
+        use_lock: bool = True,
+    ) -> bool:
+        """Run a flet-video coroutine with timeout so UI stays responsive."""
+        for attempt in range(1, retries + 1):
+            try:
+                if use_lock:
+                    acquired = self._video_op_lock.locked()
+                    if acquired:
+                        # Lock is held by another operation; skip non-required calls
+                        if not required:
+                            print(f"Video command skipped ({name}): lock busy")
+                            return False
+                        # For required calls, wait for lock with its own timeout
+                        try:
+                            await asyncio.wait_for(self._video_op_lock.acquire(), timeout=timeout / 2)
+                        except asyncio.TimeoutError:
+                            print(f"Video command timeout ({name}): could not acquire lock")
+                            if required:
+                                raise RuntimeError(f"Timeout waiting for lock: {name}")
+                            return False
+                    else:
+                        await self._video_op_lock.acquire()
+                    try:
+                        await asyncio.wait_for(coro_factory(), timeout=timeout)
+                    finally:
+                        self._video_op_lock.release()
+                else:
+                    await asyncio.wait_for(coro_factory(), timeout=timeout)
+                return True
+            except asyncio.TimeoutError as ex:
+                if attempt >= retries:
+                    print(f"Video command timeout ({name}) after {timeout:.1f}s; giving up")
+                    if required:
+                        raise RuntimeError(f"Timeout during video command: {name}") from ex
+                    return False
+                await asyncio.sleep(0.15 * attempt)
+            except RuntimeError:
+                raise
+            except Exception as ex:
+                # Removing from an empty playlist is expected while resetting state.
+                if name == "playlist_remove" and "out of range" in str(ex).lower():
+                    return False
+                print(f"Video command failed ({name}): {ex}")
+                if required:
+                    raise
+                return False
+        return False
     
     def play_channel(self, channel: Channel):
         """Start playing a channel."""
+        self._play_request_id += 1
+        request_id = self._play_request_id
+        if self.page:
+            self.page.run_task(self._play_channel_async, channel, request_id)
+
+    async def _play_channel_async(self, channel: Channel, request_id: int):
+        """Start playing a channel (async-safe for flet-video controls)."""
+        if request_id != self._play_request_id:
+            return
+
         # Reset extension fallback state for new channel (unless we're mid-fallback)
         if not self._original_url or self._original_url != channel.url:
             self._current_extension_index = 0
@@ -529,7 +604,7 @@ class VideoPlayerComponent(ft.Column):
         if self._dlna_service.get_current_device():
             # Stop local playback if running (unless Sync is ON)
             if self._is_playing and not self._sync_playback_switch.value:
-                self._video.pause()
+                await self._video_call("pause-before-cast", lambda: self._video.pause(), timeout=1.5, use_lock=False)
                 self._is_playing = False
                 if self.page:
                     self.page.update()
@@ -554,16 +629,31 @@ class VideoPlayerComponent(ft.Column):
             self.page.update()
         
         try:
-            # STOP current playback completely
-            self._video.stop()
+            if request_id != self._play_request_id:
+                return
+
+            # Pause current playback first, but only if actually playing.
+            # Use use_lock=False to avoid cascading lock contention.
+            if self._is_playing:
+                await self._video_call(
+                    "pause-before-switch", lambda: self._video.pause(),
+                    timeout=1.5 * _TIMEOUT_MULT, use_lock=False,
+                )
+                self._is_playing = False
+            await asyncio.sleep(0.05)
             
-            # CLEAR the playlist (remove all items)
-            # We do this multiple times to ensure it's empty
-            for _ in range(20):
-                try:
-                    self._video.playlist_remove(0)
-                except:
+            # Clear a few entries to keep transitions smooth without blocking too long.
+            for _ in range(3):
+                removed = await self._video_call(
+                    "playlist_remove",
+                    lambda: self._video.playlist_remove(0),
+                    timeout=1.0,
+                )
+                if not removed:
                     break
+
+            if request_id != self._play_request_id:
+                return
             
             # Determine the stream URL to use
             stream_url = channel.url
@@ -572,9 +662,8 @@ class VideoPlayerComponent(ft.Column):
             if self._stream_proxy.is_throttle_enabled():
                 # Ensure proxy is running
                 if not self._stream_proxy.is_running():
-                    if self.page:
-                        self.page.run_task(self._start_proxy_and_play, channel)
-                        return
+                    await self._start_proxy_and_play(channel, request_id)
+                    return
                 
                 # Register stream with proxy and get throttled URL
                 stream_url = self._stream_proxy.register_stream(channel.url)
@@ -611,13 +700,37 @@ class VideoPlayerComponent(ft.Column):
                 # Live streams: no special options (was working before)
                 media = fv.VideoMedia(resource=stream_url)
             
-            self._video.playlist_add(media)
+            add_ok = await self._video_call(
+                "playlist_add",
+                lambda: self._video.playlist_add(media),
+                timeout=10.0 * _TIMEOUT_MULT,
+                required=False,
+                retries=2,
+            )
+            
+            if not add_ok:
+                # Playlist add timed out – try a direct resource assignment as fallback
+                print("playlist_add failed; falling back to direct playlist assignment")
+                try:
+                    self._video.playlist = [media]
+                    if self.page:
+                        self._video.update()
+                    await asyncio.sleep(0.15 if _IS_WINDOWS else 0.1)
+                except Exception as ex:
+                    print(f"Direct playlist assignment also failed: {ex}")
+                    raise RuntimeError("Cannot load media into player") from ex
             
             # JUMP to index 0 (the only item now)
-            self._video.jump_to(0)
+            await self._video_call("jump_to", lambda: self._video.jump_to(0), timeout=3.0 * _TIMEOUT_MULT)
             
             # PLAY
-            self._video.play()
+            await self._video_call(
+                "play",
+                lambda: self._video.play(),
+                timeout=6.0 * _TIMEOUT_MULT,
+                required=False,
+                retries=2,
+            )
             self._is_playing = True
             
             # Show video container
@@ -631,15 +744,21 @@ class VideoPlayerComponent(ft.Column):
             print(f"Play Error: {e}")
             self._loading_indicator.visible = False
             self._welcome.visible = True
+            self._video_container.visible = False
+            self._is_playing = False
+            if self.page:
+                self.page.update()
             if self._on_error:
                 self._on_error(str(e))
 
-    async def _start_proxy_and_play(self, channel: Channel):
+    async def _start_proxy_and_play(self, channel: Channel, request_id: int):
         """Start the stream proxy and then play the channel."""
         try:
             await self._stream_proxy.start()
+            if request_id != self._play_request_id:
+                return
             # Now play the channel (proxy is running)
-            self.play_channel(channel)
+            await self._play_channel_async(channel, request_id)
         except Exception as e:
             print(f"Proxy start error: {e}")
             if self._on_error:
@@ -1019,14 +1138,14 @@ class VideoPlayerComponent(ft.Column):
                 color=ft.Colors.BLACK54,
             ),
             # Center the dialog in the overlay
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             on_click=lambda e: None, # Prevent click propagation
         )
         
         # Set content and show overlay
         self._overlay_container.content = ft.Container(
             content=content,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             bgcolor=ft.Colors.with_opacity(0.7, ft.Colors.BLACK), # Dim background
             on_click=lambda _: self._close_dialog(), # Close on backdrop click
             padding=20,
@@ -1053,7 +1172,7 @@ class VideoPlayerComponent(ft.Column):
                     spacing=12,
                     alignment=ft.MainAxisAlignment.CENTER,
                 ),
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 padding=ft.padding.all(20),
             )
         )
@@ -1083,7 +1202,7 @@ class VideoPlayerComponent(ft.Column):
                         alignment=ft.MainAxisAlignment.CENTER,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=ft.padding.all(20),
                 )
             )
@@ -1244,7 +1363,7 @@ class VideoPlayerComponent(ft.Column):
                             ft.Text(self._current_channel.name, size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                             ft.Text("Playing on TV", color=ft.Colors.WHITE54),
                         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                        alignment=ft.alignment.center,
+                        alignment=ft.Alignment.CENTER,
                         padding=20
                     )
                 )

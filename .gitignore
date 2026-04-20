@@ -1,4 +1,8 @@
 venv
+.venv
 build
 build_deb
 dist
+__pycache__/
+*.pyc
+*.pyo

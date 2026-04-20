@@ -28,8 +28,8 @@ class SkeletonCard(ft.Container):
                     bgcolor="#1a1a2e",
                     animate=ft.Animation(1000, ft.AnimationCurve.EASE_IN_OUT),
                     gradient=ft.LinearGradient(
-                        begin=ft.alignment.center_left,
-                        end=ft.alignment.center_right,
+                        begin=ft.Alignment.CENTER_LEFT,
+                        end=ft.Alignment.CENTER_RIGHT,
                         colors=self._shimmer_colors,
                     ),
                 ),
@@ -204,7 +204,7 @@ class BufferingOverlay(ft.Container):
         
         self.visible = False
         self.expand = True
-        self.alignment = ft.alignment.center
+        self.alignment = ft.Alignment.CENTER
         self.animate_opacity = ft.Animation(200, ft.AnimationCurve.EASE_OUT)
     
     def show(self, message: str = "Buffering..."):
@@ -280,7 +280,7 @@ class ErrorOverlay(ft.Container):
                     ft.Row(
                         [
                             ft.OutlinedButton(
-                                text="Go Back",
+                                content="Go Back",
                                 icon=ft.Icons.ARROW_BACK_ROUNDED,
                                 style=ft.ButtonStyle(
                                     color=ft.Colors.WHITE70,
@@ -289,7 +289,7 @@ class ErrorOverlay(ft.Container):
                                 on_click=lambda e: self._on_back() if self._on_back else None,
                             ),
                             ft.ElevatedButton(
-                                text="Retry",
+                                content="Retry",
                                 icon=ft.Icons.REFRESH_ROUNDED,
                                 bgcolor=ft.Colors.PURPLE_700,
                                 color=ft.Colors.WHITE,
@@ -312,7 +312,7 @@ class ErrorOverlay(ft.Container):
         
         self.visible = False
         self.expand = True
-        self.alignment = ft.alignment.center
+        self.alignment = ft.Alignment.CENTER
         self.animate_opacity = ft.Animation(200, ft.AnimationCurve.EASE_OUT)
     
     def show(self, message: str = "Failed to load stream", detail: str = "", retry_attempt: int = 0):

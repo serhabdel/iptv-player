@@ -28,16 +28,15 @@ class SeriesView(ft.Container):
         
         # UI Components
         self._header_content = ft.Container()
-        self._season_tabs = ft.Tabs(
-            selected_index=0,
-            animation_duration=300,
-            tabs=[],
-            on_change=self._on_season_change,
-            scrollable=True,
-            divider_color=ft.Colors.TRANSPARENT,
-            indicator_color=ft.Colors.PURPLE_400,
-            label_color=ft.Colors.WHITE,
-            unselected_label_color=ft.Colors.WHITE54,
+        self._season_tabs = ft.Dropdown(
+            width=260,
+            options=[],
+            value="1",
+            bgcolor="#1a1a2e",
+            border_color=ft.Colors.WHITE24,
+            focused_border_color=ft.Colors.PURPLE_400,
+            color=ft.Colors.WHITE,
+            on_select=self._on_season_change,
         )
         self._episode_list = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
         
@@ -149,7 +148,7 @@ class SeriesView(ft.Container):
                             src=logo if logo else "",
                             width=150,
                             height=220,
-                            fit=ft.ImageFit.COVER,
+                            fit=ft.BoxFit.COVER,
                             error_content=ft.Icon(ft.Icons.TV_ROUNDED, size=50, color=ft.Colors.WHITE24),
                         ) if logo else ft.Icon(ft.Icons.TV_ROUNDED, size=50, color=ft.Colors.WHITE24),
                         width=150,
@@ -209,31 +208,26 @@ class SeriesView(ft.Container):
             ),
             padding=20,
             gradient=ft.LinearGradient(
-                begin=ft.alignment.top_center,
-                end=ft.alignment.bottom_center,
+                begin=ft.Alignment.TOP_CENTER,
+                end=ft.Alignment.BOTTOM_CENTER,
                 colors=["#1a1a2e", "#0a0a12"],
             ),
         )
 
     def _update_season_tabs(self):
         """Update season selection tabs."""
-        self._season_tabs.tabs = []
+        self._season_tabs.options = []
         for season_num in self._sorted_seasons:
             title = f"Season {season_num}" if season_num > 0 else "Extras"
-            self._season_tabs.tabs.append(
-                ft.Tab(
-                    tab_content=ft.Text(title, size=16, weight=ft.FontWeight.W_500),
-                )
-            )
-        self._season_tabs.selected_index = 0
+            self._season_tabs.options.append(ft.dropdown.Option(str(season_num), title))
+        self._season_tabs.value = str(self._selected_season)
 
     def _on_season_change(self, e):
         """Handle season tab change."""
         try:
-            # Map tab index to actual season number from sorted list
-            tab_index = self._season_tabs.selected_index
-            if 0 <= tab_index < len(self._sorted_seasons):
-                self._selected_season = self._sorted_seasons[tab_index]
+            selected = int(self._season_tabs.value) if self._season_tabs.value is not None else self._selected_season
+            if selected in self._seasons:
+                self._selected_season = selected
                 self._update_episode_list()
                 if self.page:
                     self.update()

@@ -41,6 +41,11 @@ class StateManager:
         self._epg_data: Dict[str, List[dict]] = {}  # channel_id -> programs
         self._content_counts: Dict[str, int] = {"live": 0, "movie": 0, "series": 0}
         
+        # Indexed lookups for performance
+        self._channel_by_url: Dict[str, Channel] = {}
+        self._channels_by_type: Dict[str, List[Channel]] = {"live": [], "movie": [], "series": []}
+        self._index_dirty: bool = True
+        
         # Callbacks
         self._on_playlist_change: List[Callable] = []
         self._on_favorites_change: List[Callable] = []
@@ -235,6 +240,7 @@ class StateManager:
                 channel.is_favorite = True
         
         self._playlists.append(playlist)
+        self._index_dirty = True
         self._save_playlists()
         self._notify_playlist_change()
     
@@ -358,8 +364,23 @@ class StateManager:
         """Register callback for current channel changes."""
         self._on_channel_change.append(callback)
     
+    def _rebuild_index(self):
+        """Rebuild lookup indexes after playlist changes."""
+        self._channel_by_url.clear()
+        self._channels_by_type = {"live": [], "movie": [], "series": []}
+        for playlist in self._playlists:
+            for ch in playlist.channels:
+                self._channel_by_url[ch.url] = ch
+                c_type = getattr(ch, 'content_type', 'live')
+                if c_type in self._channels_by_type:
+                    self._channels_by_type[c_type].append(ch)
+                else:
+                    self._channels_by_type["live"].append(ch)
+        self._index_dirty = False
+    
     def _notify_playlist_change(self):
         """Notify all playlist change callbacks."""
+        self._index_dirty = True
         for callback in self._on_playlist_change:
             callback()
     
@@ -465,14 +486,13 @@ class StateManager:
     def get_recently_viewed_channels(self, limit: int = 50, content_type: Optional[str] = None) -> List[Channel]:
         """Get recently viewed as Channel objects."""
         viewed = self.get_recently_viewed(limit, content_type)
+        if self._index_dirty:
+            self._rebuild_index()
         channels = []
-        all_channels = {ch.url: ch for ch in self.get_all_channels()}
-        
         for rv in viewed:
             url = rv.get("url")
-            if url in all_channels:
-                channels.append(all_channels[url])
-        
+            if url in self._channel_by_url:
+                channels.append(self._channel_by_url[url])
         return channels
     
     # EPG Management
@@ -568,6 +588,12 @@ class StateManager:
 
     def get_channels_by_type(self, content_type: str, playlist_filter: Optional[str] = None) -> List[Channel]:
         """Get all channels of a specific content type."""
+        # Fast path: no playlist filter and index is fresh
+        if playlist_filter is None or playlist_filter == "All Playlists":
+            if self._index_dirty:
+                self._rebuild_index()
+            return self._channels_by_type.get(content_type, [])
+        # Slow path with filter
         channels = self.get_all_channels(playlist_filter)
         return [ch for ch in channels if getattr(ch, 'content_type', 'live') == content_type]
     

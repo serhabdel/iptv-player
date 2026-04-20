@@ -6,6 +6,8 @@ from ..models.channel import Channel
 from ..services.state_manager import StateManager
 from ..components.skeleton_loader import SkeletonGrid, SkeletonList
 
+_SEARCH_DEBOUNCE_MS = 250  # Debounce search input to avoid excessive re-renders
+
 
 class ContentView(ft.Container):
     """Content view with categories sidebar and content grid."""
@@ -36,6 +38,9 @@ class ContentView(ft.Container):
         # Loading state
         self._is_loading = True
         
+        # Debounce state for search
+        self._search_debounce_task: Optional[asyncio.Task] = None
+        
         # Skeleton loaders
         self._skeleton_grid = SkeletonGrid(items_per_row=5, rows=3)
         self._skeleton_list = SkeletonList(items=12)
@@ -51,6 +56,14 @@ class ContentView(ft.Container):
         self._channel_count_text = None
         
         self._build_ui()
+
+    def _safe_update(self) -> bool:
+        """Safely update only when this control is attached to the page tree."""
+        try:
+            self.update()
+            return True
+        except Exception:
+            return False
     
     def _get_title(self) -> str:
         """Get the title for the current content type."""
@@ -337,7 +350,7 @@ class ContentView(ft.Container):
                         spacing=8,
                     ),
                     expand=True,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 )
             )
             return
@@ -367,13 +380,13 @@ class ContentView(ft.Container):
             self._content_grid.controls.append(
                 ft.Container(
                     content=ft.ElevatedButton(
-                        text=f"Load More ({len(channels) - self._page_size:,} remaining)",
+                        content=f"Load More ({len(channels) - self._page_size:,} remaining)",
                         icon=ft.Icons.EXPAND_MORE_ROUNDED,
                         bgcolor="#6366f1",
                         color=ft.Colors.WHITE,
                         on_click=self._load_more,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=ft.padding.symmetric(vertical=16),
                 )
             )
@@ -390,13 +403,13 @@ class ContentView(ft.Container):
             self._content_grid.controls.append(
                 ft.Container(
                     content=ft.ElevatedButton(
-                        text=f"Load More ({len(channels) - self._page_size:,} remaining)",
+                        content=f"Load More ({len(channels) - self._page_size:,} remaining)",
                         icon=ft.Icons.EXPAND_MORE_ROUNDED,
                         bgcolor="#6366f1",
                         color=ft.Colors.WHITE,
                         on_click=self._load_more,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=ft.padding.symmetric(vertical=16),
                 )
             )
@@ -427,14 +440,14 @@ class ContentView(ft.Container):
                         src=channel.logo,
                         width=140,
                         height=200,
-                        fit=ft.ImageFit.COVER,
+                        fit=ft.BoxFit.COVER,
                         error_content=ft.Container(
                             content=ft.Icon(
                                 ft.Icons.MOVIE_ROUNDED if self.content_type == "movie" else ft.Icons.TV_ROUNDED,
                                 size=48,
                                 color=ft.Colors.WHITE24,
                             ),
-                            alignment=ft.alignment.center,
+                            alignment=ft.Alignment.CENTER,
                         ),
                     ) if channel.logo else ft.Container(
                         content=ft.Icon(
@@ -442,7 +455,7 @@ class ContentView(ft.Container):
                             size=48,
                             color=ft.Colors.WHITE24,
                         ),
-                        alignment=ft.alignment.center,
+                        alignment=ft.Alignment.CENTER,
                     ),
                     width=140,
                     height=200,
@@ -497,7 +510,7 @@ class ContentView(ft.Container):
                             src=channel.logo,
                             width=60,
                             height=40,
-                            fit=ft.ImageFit.CONTAIN,
+                            fit=ft.BoxFit.CONTAIN,
                         ) if channel.logo else ft.Icon(
                             ft.Icons.LIVE_TV_ROUNDED,
                             size=24,
@@ -505,7 +518,7 @@ class ContentView(ft.Container):
                         ),
                         width=60,
                         height=40,
-                        alignment=ft.alignment.center,
+                        alignment=ft.Alignment.CENTER,
                     ),
                     # Info
                     ft.Column(
@@ -621,8 +634,19 @@ class ContentView(ft.Container):
             self.page.update()
     
     def _on_search_change(self, e):
-        """Handle search input change."""
+        """Handle search input change with debouncing."""
         self._search_query = e.control.value
+        
+        # Cancel previous debounce task
+        if self._search_debounce_task and not self._search_debounce_task.done():
+            self._search_debounce_task.cancel()
+        
+        if self.page:
+            self._search_debounce_task = self.page.run_task(self._debounced_search)
+    
+    async def _debounced_search(self):
+        """Apply search after debounce delay."""
+        await asyncio.sleep(_SEARCH_DEBOUNCE_MS / 1000.0)
         self._page_size = 50
         self._update_content_grid()
         if self.page:
@@ -657,9 +681,9 @@ class ContentView(ft.Container):
         self._is_loading = True  # Show skeleton
         self._build_ui()
         if self.page:
-            self.update()
-            # Trigger async load for smooth transition
-            self.page.run_task(self._async_load_content)
+            # Trigger async load for smooth transition once attached.
+            if self._safe_update():
+                self.page.run_task(self._async_load_content)
     
     async def _async_load_content(self):
         """Async content loading with skeleton transition."""
@@ -674,5 +698,5 @@ class ContentView(ft.Container):
         self._is_loading = True
         self._update_content_grid()
         if self.page:
-            self.update()
-            self.page.run_task(self._async_load_content)
+            if self._safe_update():
+                self.page.run_task(self._async_load_content)

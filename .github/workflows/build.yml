@@ -95,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iptv-player-windows-portable
-          path: dist/iptv-player.exe
+          path: dist/iptv-player
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4

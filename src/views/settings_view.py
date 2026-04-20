@@ -65,7 +65,7 @@ class SettingsView(ft.Container):
         )
         
         self._add_button = ft.ElevatedButton(
-            text="Add Playlist",
+            content="Add Playlist",
             icon=ft.Icons.ADD_ROUNDED,
             bgcolor=ft.Colors.PURPLE_700,
             color=ft.Colors.WHITE,
@@ -120,9 +120,8 @@ class SettingsView(ft.Container):
         )
         
         # File picker
-        self._file_picker = ft.FilePicker(
-            on_result=self._on_file_picked,
-        )
+        self._file_picker = ft.FilePicker()
+        self._file_picker.on_result = self._on_file_picked
         
         # Playlist list
         self._playlist_list = ft.ListView(
@@ -179,7 +178,7 @@ class SettingsView(ft.Container):
                     ),
                     ft.Container(height=12),
                     ft.OutlinedButton(
-                        text="Browse for M3U file...",
+                        content="Browse for M3U file...",
                         icon=ft.Icons.FOLDER_OPEN_ROUNDED,
                         style=ft.ButtonStyle(
                             color=ft.Colors.WHITE70,
@@ -322,7 +321,7 @@ class SettingsView(ft.Container):
                     ft.Row(
                         [
                             ft.OutlinedButton(
-                                text="Test Connection",
+                                content="Test Connection",
                                 icon=ft.Icons.WIFI_TETHERING_ROUNDED,
                                 style=ft.ButtonStyle(
                                     color=ft.Colors.WHITE70,
@@ -331,7 +330,7 @@ class SettingsView(ft.Container):
                                 on_click=self._test_xtream_connection,
                             ),
                             ft.ElevatedButton(
-                                text="Add Provider",
+                                content="Add Provider",
                                 icon=ft.Icons.ADD_ROUNDED,
                                 bgcolor=ft.Colors.BLUE_700,
                                 color=ft.Colors.WHITE,
@@ -378,7 +377,7 @@ class SettingsView(ft.Container):
                     ft.Row(
                         [
                             ft.ElevatedButton(
-                                text="Reindex All Playlists",
+                                content="Reindex All Playlists",
                                 icon=ft.Icons.REFRESH_ROUNDED,
                                 bgcolor=ft.Colors.BLUE_700,
                                 color=ft.Colors.WHITE,
@@ -399,7 +398,7 @@ class SettingsView(ft.Container):
                     ft.Row(
                         [
                             ft.OutlinedButton(
-                                text="Clear Recently Viewed",
+                                content="Clear Recently Viewed",
                                 icon=ft.Icons.HISTORY_ROUNDED,
                                 style=ft.ButtonStyle(
                                     color=ft.Colors.WHITE70,
@@ -408,7 +407,7 @@ class SettingsView(ft.Container):
                                 on_click=self._clear_recently_viewed,
                             ),
                             ft.OutlinedButton(
-                                text="Clear Favorites",
+                                content="Clear Favorites",
                                 icon=ft.Icons.FAVORITE_BORDER_ROUNDED,
                                 style=ft.ButtonStyle(
                                     color=ft.Colors.WHITE70,
@@ -421,7 +420,7 @@ class SettingsView(ft.Container):
                     ),
                     ft.Container(height=8),
                     ft.ElevatedButton(
-                        text="Reset All Data",
+                        content="Reset All Data",
                         icon=ft.Icons.DELETE_FOREVER_ROUNDED,
                         bgcolor=ft.Colors.RED_700,
                         color=ft.Colors.WHITE,
@@ -510,7 +509,7 @@ class SettingsView(ft.Container):
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         spacing=8,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=ft.padding.all(32),
                 )
             )
@@ -709,7 +708,7 @@ class SettingsView(ft.Container):
                         color=ft.Colors.WHITE30,
                         size=12,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=ft.padding.all(16),
                 )
             )

@@ -70,7 +70,7 @@ class TrackSelector(ft.Container):
                         spacing=8,
                     ),
                     padding=24,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 )
             )
         else:
@@ -198,7 +198,7 @@ class TrackSelector(ft.Container):
             ),
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
-        self.alignment = ft.alignment.center
+        self.alignment = ft.Alignment.CENTER
         self.expand = True
         self.bgcolor = "#00000080"  # Semi-transparent backdrop
         self.on_click = lambda e: self._on_close() if self._on_close else None

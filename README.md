@@ -48,8 +48,11 @@ sudo dpkg -i iptv-player.deb
 
 1.  Download the project.
 2.  Install Python 3.12+.
-3.  Install dependencies: `pip install -r requirements.txt`
-4.  Run: `flet run main.py` or build the .exe using `flet pack main.py`.
+3.  Build portable app + installer (creates local `.venv` automatically):
+    `powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1`
+4.  Outputs:
+    *   Portable app folder: `dist/iptv-player`
+    *   Installer: `dist/IPTV-Player-Setup-vX.Y.Z.exe`
 
 ### Other Linux (AppImage)
 
