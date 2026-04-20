@@ -545,20 +545,35 @@ class VideoPlayerComponent(ft.Column):
             self.page.update()
             
     def stop(self):
-        """Stop playback and reset state."""
-        if self._video and self.page:
-            self.page.run_task(self._stop_video_async)
+        """Stop playback and fully reset the player UI."""
+        was_playing = self._is_playing
         self._is_playing = False
+        
+        if self._video and self.page and was_playing:
+            self.page.run_task(self._stop_video_async)
+        
+        # Reset UI to welcome state
         self._loading_indicator.visible = False
         self._now_playing_bar.visible = False
+        self._video_container.visible = False
+        self._buffering_overlay.hide()
+        self._error_overlay.hide()
+        self._welcome.visible = True
+        
         if self.page:
             self.page.update()
 
     async def _stop_video_async(self):
-        """Stop/pause video safely using async flet-video methods."""
-        if not self._video or not self._is_playing:
+        """Stop the native video player and clear playlist."""
+        if not self._video:
             return
-        await self._video_call("pause", lambda: self._video.pause(), timeout=1.5, use_lock=False)
+        # Use the real stop method to release the stream, not just pause
+        await self._video_call("stop", lambda: self._video.stop(), timeout=2.0, use_lock=False)
+        # Clear playlist so old media doesn't linger
+        self._video.playlist.clear()
+        await self._video_call(
+            "playlist_remove", lambda: self._video.playlist_remove(0), timeout=1.0,
+        )
 
     async def _video_call(
         self,
