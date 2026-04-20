@@ -132,6 +132,9 @@ class HubView(ft.Container):
             expand=True,
         )
         
+        # Continue watching section (movies/series with saved positions)
+        continue_watching = self._build_continue_watching_section()
+        
         # Favorites section (if any)
         favorites_section = self._build_favorites_section()
         
@@ -145,6 +148,7 @@ class HubView(ft.Container):
                     header,
                     welcome,
                     cards_grid,
+                    continue_watching if continue_watching else ft.Container(),
                     favorites_section if favorites_section else ft.Container(),
                     recently_viewed if recently_viewed else ft.Container(),
                 ],
@@ -274,6 +278,136 @@ class HubView(ft.Container):
         )
         
         return card
+    
+    def _format_duration(self, ms: int) -> str:
+        """Format milliseconds as H:MM:SS or MM:SS."""
+        total_seconds = ms // 1000
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+    
+    def _build_continue_watching_section(self) -> Optional[ft.Container]:
+        """Build continue watching section with progress bars."""
+        items = self.state.get_continue_watching(limit=10)
+        if not items:
+            return None
+        
+        tiles = []
+        for item in items:
+            progress = item["progress"] / 100.0  # 0.0 to 1.0
+            pos_str = self._format_duration(item["position_ms"])
+            dur_str = self._format_duration(item["duration_ms"])
+            
+            content_icon = ft.Icons.MOVIE_ROUNDED if item["content_type"] == "movie" else ft.Icons.TV_ROUNDED
+            
+            tile = ft.Container(
+                content=ft.Column(
+                    [
+                        # Thumbnail / icon
+                        ft.Container(
+                            content=ft.Image(
+                                src=item["logo"],
+                                width=120,
+                                height=70,
+                                fit=ft.BoxFit.COVER,
+                                border_radius=6,
+                                error_content=ft.Container(
+                                    content=ft.Icon(content_icon, size=28, color=ft.Colors.WHITE24),
+                                    alignment=ft.Alignment.CENTER,
+                                ),
+                            ) if item.get("logo") else ft.Container(
+                                content=ft.Icon(content_icon, size=28, color=ft.Colors.WHITE24),
+                                alignment=ft.Alignment.CENTER,
+                            ),
+                            width=120,
+                            height=70,
+                            bgcolor="#2a2a3e",
+                            border_radius=6,
+                            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                        ),
+                        # Progress bar
+                        ft.ProgressBar(
+                            value=progress,
+                            width=120,
+                            height=3,
+                            color="#a78bfa",
+                            bgcolor=ft.Colors.WHITE10,
+                        ),
+                        # Title
+                        ft.Text(
+                            item["name"][:20] + "..." if len(item["name"]) > 20 else item["name"],
+                            size=11,
+                            color=ft.Colors.WHITE,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            weight=ft.FontWeight.W_500,
+                        ),
+                        # Time info
+                        ft.Text(
+                            f"{pos_str} / {dur_str}",
+                            size=10,
+                            color=ft.Colors.WHITE38,
+                        ),
+                    ],
+                    spacing=4,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                width=130,
+                padding=8,
+                border_radius=10,
+                bgcolor="#1a1a2e",
+                on_click=lambda e, url=item["url"]: self._play_continue_watching(url),
+                on_hover=lambda e: self._on_tile_hover(e),
+                ink=True,
+            )
+            tiles.append(tile)
+        
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.PLAY_CIRCLE_OUTLINE_ROUNDED, size=20, color="#a78bfa"),
+                            ft.Text(
+                                "Continue Watching",
+                                size=16,
+                                weight=ft.FontWeight.W_500,
+                                color=ft.Colors.WHITE,
+                            ),
+                            ft.Text(
+                                f"({len(items)})",
+                                size=14,
+                                color=ft.Colors.WHITE54,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    ft.Row(
+                        tiles,
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ],
+                spacing=12,
+            ),
+            margin=ft.margin.only(top=24),
+            padding=16,
+            border_radius=12,
+            bgcolor="#1a1a2e40",
+            border=ft.border.all(1, "#a78bfa20"),
+        )
+    
+    def _play_continue_watching(self, url: str):
+        """Play a continue watching item (will auto-resume from saved position)."""
+        channels = self.state.get_all_channels()
+        for channel in channels:
+            if channel.url == url:
+                if self._on_play_channel:
+                    self._on_play_channel(channel)
+                break
     
     def _build_favorites_section(self) -> Optional[ft.Container]:
         """Build favorites section if there are items."""

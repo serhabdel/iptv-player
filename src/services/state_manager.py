@@ -28,6 +28,7 @@ class StateManager:
         self._xtream_file = self.data_dir / "xtream.json"
         self._recently_viewed_file = self.data_dir / "recently_viewed.json"
         self._epg_cache_file = self.data_dir / "epg_cache.json"
+        self._playback_positions_file = self.data_dir / "playback_positions.json"
         self._channels_cache_dir = self.data_dir / "cache"
         self._channels_cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -40,6 +41,7 @@ class StateManager:
         self._recently_viewed: List[dict] = []  # List of {url, timestamp, name, logo, content_type}
         self._epg_data: Dict[str, List[dict]] = {}  # channel_id -> programs
         self._content_counts: Dict[str, int] = {"live": 0, "movie": 0, "series": 0}
+        self._playback_positions: Dict[str, dict] = {}  # url -> {position_ms, duration_ms, timestamp, name, logo, content_type, group}
         
         # Indexed lookups for performance
         self._channel_by_url: Dict[str, Channel] = {}
@@ -90,6 +92,9 @@ class StateManager:
         
         # Load EPG cache
         self._load_epg_cache()
+        
+        # Load playback positions
+        self._load_playback_positions()
     
     def _load_playlist_from_cache(self, p_data: dict) -> Optional[Playlist]:
         """Load a playlist from cache."""
@@ -452,28 +457,27 @@ class StateManager:
         self._recently_viewed_file.write_text(json.dumps(data, indent=2))
     
     def add_to_recently_viewed(self, channel: Channel):
-        """Add a channel to recently viewed list."""
-        # Remove if already exists
+        """Add a channel to recently viewed list (deduped, capped)."""
+        # Remove duplicates by URL
         self._recently_viewed = [
             rv for rv in self._recently_viewed 
             if rv.get("url") != channel.url
         ]
         
-        # Add to front of list
+        # Add to front
         self._recently_viewed.insert(0, {
             "url": channel.url,
             "name": channel.name,
-            "logo": channel.logo,
+            "logo": channel.logo or "",
             "group": channel.group,
-            "content_type": channel.content_type,
-            "timestamp": datetime.now().isoformat()
+            "content_type": getattr(channel, 'content_type', 'live'),
+            "timestamp": datetime.now().isoformat(),
         })
         
-        # Keep only last 100 items
-        self._recently_viewed = self._recently_viewed[:100]
+        # Keep max 150 items
+        self._recently_viewed = self._recently_viewed[:150]
         self._save_recently_viewed()
         
-        # Update channel's last_watched
         channel.last_watched = datetime.now()
     
     def get_recently_viewed(self, limit: int = 50, content_type: Optional[str] = None) -> List[dict]:
@@ -547,6 +551,98 @@ class StateManager:
             except (ValueError, TypeError):
                 continue
         return None
+    
+    # Playback Position Management (Continue Watching)
+    def _load_playback_positions(self):
+        """Load saved playback positions from file."""
+        if self._playback_positions_file.exists():
+            try:
+                data = json.loads(self._playback_positions_file.read_text())
+                self._playback_positions = data.get("positions", {})
+                # Prune entries older than 90 days
+                cutoff = datetime.now().timestamp() - (90 * 24 * 3600)
+                self._playback_positions = {
+                    url: pos for url, pos in self._playback_positions.items()
+                    if pos.get("timestamp", 0) > cutoff
+                }
+            except Exception:
+                self._playback_positions = {}
+    
+    def _save_playback_positions(self):
+        """Save playback positions to file."""
+        data = {"positions": self._playback_positions}
+        self._playback_positions_file.write_text(json.dumps(data, indent=2))
+    
+    def save_playback_position(self, channel: "Channel", position_ms: int, duration_ms: int):
+        """Save the current playback position for a channel.
+        
+        Only saves for VOD content (movies/series) with meaningful progress.
+        Positions under 10s or within 95% of duration are ignored (just started / finished).
+        """
+        if not channel or not channel.url:
+            return
+        # Only track VOD content
+        if getattr(channel, 'content_type', 'live') == 'live':
+            return
+        # Ignore very short progress (< 10s)
+        if position_ms < 10_000:
+            return
+        # If within 5% of end, treat as finished and remove entry
+        if duration_ms > 0 and position_ms >= duration_ms * 0.95:
+            self._playback_positions.pop(channel.url, None)
+            self._save_playback_positions()
+            return
+        
+        self._playback_positions[channel.url] = {
+            "position_ms": position_ms,
+            "duration_ms": duration_ms,
+            "timestamp": datetime.now().timestamp(),
+            "name": channel.name,
+            "logo": channel.logo or "",
+            "content_type": getattr(channel, 'content_type', 'movie'),
+            "group": channel.group,
+        }
+        # Keep max 200 entries
+        if len(self._playback_positions) > 200:
+            sorted_entries = sorted(
+                self._playback_positions.items(), key=lambda x: x[1].get("timestamp", 0)
+            )
+            self._playback_positions = dict(sorted_entries[-200:])
+        self._save_playback_positions()
+    
+    def get_playback_position(self, url: str) -> Optional[dict]:
+        """Get saved playback position for a URL. Returns {position_ms, duration_ms, ...} or None."""
+        return self._playback_positions.get(url)
+    
+    def remove_playback_position(self, url: str):
+        """Remove saved position (e.g. when user finishes watching)."""
+        if url in self._playback_positions:
+            del self._playback_positions[url]
+            self._save_playback_positions()
+    
+    def get_continue_watching(self, limit: int = 20) -> List[dict]:
+        """Get list of items with saved positions, sorted by most recent.
+        
+        Returns list of dicts: {url, position_ms, duration_ms, progress, name, logo, content_type, group, timestamp}
+        """
+        items = []
+        for url, pos in self._playback_positions.items():
+            duration = pos.get("duration_ms", 0)
+            position = pos.get("position_ms", 0)
+            progress = (position / duration * 100) if duration > 0 else 0
+            items.append({
+                "url": url,
+                "position_ms": position,
+                "duration_ms": duration,
+                "progress": round(progress, 1),
+                "name": pos.get("name", "Unknown"),
+                "logo": pos.get("logo", ""),
+                "content_type": pos.get("content_type", "movie"),
+                "group": pos.get("group", ""),
+                "timestamp": pos.get("timestamp", 0),
+            })
+        items.sort(key=lambda x: x["timestamp"], reverse=True)
+        return items[:limit]
     
     # Content Counts
     def get_content_counts(self) -> dict:

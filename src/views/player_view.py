@@ -1,5 +1,6 @@
 """Player view - Full screen video player for hub-based navigation."""
 import flet as ft
+import asyncio
 from typing import Optional, Callable, List
 from ..components.video_player import VideoPlayerComponent
 from ..models.channel import Channel
@@ -177,13 +178,31 @@ class PlayerView(ft.Container):
                 self._safe_update()
     
     def _handle_back_click(self, e):
-        """Handle back button click."""
-        # Stop playback
+        """Handle back button click - save position then stop."""
+        if self.page:
+            self.page.run_task(self._save_and_stop)
+    
+    async def _save_and_stop(self):
+        """Save playback position then stop and navigate back."""
+        await self._save_current_position()
         self._video_player.stop()
-        
-        # Navigate back
         if self._on_back:
             self._on_back()
+    
+    async def _save_current_position(self):
+        """Save the current playback position for the active channel."""
+        current = self._state.get_current_channel()
+        if not current:
+            return
+        # Only save for VOD (movies/series)
+        if getattr(current, 'content_type', 'live') == 'live':
+            return
+        try:
+            pos_ms, dur_ms = await self._video_player.get_position_info()
+            if pos_ms > 0 and dur_ms > 0:
+                self._state.save_playback_position(current, pos_ms, dur_ms)
+        except Exception:
+            pass
 
     def set_episode_context(self, episodes: List[Channel]):
         """Set the episode list for series navigation.
@@ -205,6 +224,13 @@ class PlayerView(ft.Container):
         
         # Update favorite button state
         self._update_favorite_button(channel)
+        
+        # Check for saved position (continue watching)
+        saved = self._state.get_playback_position(channel.url)
+        if saved and getattr(channel, 'content_type', 'live') != 'live':
+            self._video_player.set_resume_position(saved["position_ms"])
+        else:
+            self._video_player.set_resume_position(0)
         
         # Play the channel
         self._video_player.play_channel(channel)
@@ -234,20 +260,22 @@ class PlayerView(ft.Container):
     
     def _on_next_channel(self):
         """Navigate to next channel."""
-        self._navigate_channel(1)
+        if self.page:
+            self.page.run_task(self._navigate_channel_async, 1)
     
     def _on_prev_channel(self):
         """Navigate to previous channel."""
-        self._navigate_channel(-1)
+        if self.page:
+            self.page.run_task(self._navigate_channel_async, -1)
     
-    def _navigate_channel(self, delta: int):
-        """Navigate channels by delta."""
+    async def _navigate_channel_async(self, delta: int):
+        """Navigate channels by delta, saving position first."""
+        await self._save_current_position()
+        
         current = self._state.get_current_channel()
         if not current:
             return
         
-        # Get all channels
-        # Use episode list if available (for series), otherwise use all channels
         if self._episode_list:
             media_list = self._episode_list
         else:
@@ -257,7 +285,6 @@ class PlayerView(ft.Container):
             return
         
         try:
-            # Find current index
             idx = -1
             for i, ch in enumerate(media_list):
                 if ch.url == current.url:

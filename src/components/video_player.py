@@ -57,6 +57,9 @@ class VideoPlayerComponent(ft.Column):
         self._play_request_id: int = 0
         self._video_op_lock = asyncio.Lock()
         
+        # Resume position (set externally before play_channel)
+        self._resume_position_ms: int = 0
+        
         # Extension fallback for series streams
         # Many providers don't correctly report container_extension, so we try common formats
         self._extension_fallbacks = ["mkv", "ts", "mp4", "avi"]
@@ -64,6 +67,41 @@ class VideoPlayerComponent(ft.Column):
         self._original_url: str = ""  # Store original URL for extension swapping
         
         self._build_ui()
+    
+    def set_resume_position(self, position_ms: int):
+        """Set a position to seek to after the next stream loads."""
+        self._resume_position_ms = position_ms
+    
+    async def get_position_info(self) -> tuple:
+        """Get current playback position and duration in milliseconds.
+        Returns (position_ms, duration_ms). Returns (0, 0) on failure."""
+        if not self._video or not self._is_playing:
+            return (0, 0)
+        try:
+            pos = await asyncio.wait_for(self._video.get_current_position(), timeout=2.0)
+            dur = await asyncio.wait_for(self._video.get_duration(), timeout=2.0)
+            pos_ms = self._duration_to_ms(pos)
+            dur_ms = self._duration_to_ms(dur)
+            return (pos_ms, dur_ms)
+        except Exception:
+            return (0, 0)
+    
+    @staticmethod
+    def _duration_to_ms(d) -> int:
+        """Convert flet Duration or similar to milliseconds."""
+        if d is None:
+            return 0
+        if isinstance(d, (int, float)):
+            return int(d)
+        # flet.Duration has days, hours, minutes, seconds, milliseconds, microseconds
+        ms = 0
+        ms += getattr(d, 'days', 0) * 86_400_000
+        ms += getattr(d, 'hours', 0) * 3_600_000
+        ms += getattr(d, 'minutes', 0) * 60_000
+        ms += getattr(d, 'seconds', 0) * 1_000
+        ms += getattr(d, 'milliseconds', 0)
+        ms += getattr(d, 'microseconds', 0) // 1000
+        return int(ms)
     
     def set_overlay_container(self, container: ft.Container):
         """Set the overlay container for cast dialog."""
@@ -705,6 +743,21 @@ class VideoPlayerComponent(ft.Column):
             
             self._is_playing = True
             self._buffering_overlay.hide()
+            
+            # Resume from saved position if set (for continue watching)
+            if self._resume_position_ms > 0:
+                resume_ms = self._resume_position_ms
+                self._resume_position_ms = 0
+                await asyncio.sleep(0.3)  # Let the player stabilize
+                try:
+                    await self._video_call(
+                        "seek",
+                        lambda: self._video.seek(ft.Duration(milliseconds=resume_ms)),
+                        timeout=4.0 * _TIMEOUT_MULT,
+                    )
+                    print(f"Resumed playback at {resume_ms // 1000}s")
+                except Exception as ex:
+                    print(f"Resume seek failed: {ex}")
             
             if self.page:
                 self.page.update()
