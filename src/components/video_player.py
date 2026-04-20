@@ -620,10 +620,12 @@ class VideoPlayerComponent(ft.Column):
             else:
                 return
 
-        # Show loading indicator, hide welcome
+        # Show video container immediately so the native control is mounted
+        # and can respond to invoke_method calls. Show buffering overlay on top.
         self._welcome.visible = False
-        self._loading_indicator.visible = True
-        self._video_container.visible = False
+        self._loading_indicator.visible = False
+        self._video_container.visible = True
+        self._buffering_overlay.show()
         
         if self.page:
             self.page.update()
@@ -632,25 +634,20 @@ class VideoPlayerComponent(ft.Column):
             if request_id != self._play_request_id:
                 return
 
-            # Pause current playback first, but only if actually playing.
-            # Use use_lock=False to avoid cascading lock contention.
+            # Pause current playback if playing (fire-and-forget, don't block)
             if self._is_playing:
                 await self._video_call(
                     "pause-before-switch", lambda: self._video.pause(),
                     timeout=1.5 * _TIMEOUT_MULT, use_lock=False,
                 )
                 self._is_playing = False
-            await asyncio.sleep(0.05)
             
-            # Clear a few entries to keep transitions smooth without blocking too long.
-            for _ in range(3):
-                removed = await self._video_call(
-                    "playlist_remove",
-                    lambda: self._video.playlist_remove(0),
-                    timeout=1.0,
-                )
-                if not removed:
-                    break
+            # Clear the Python-side playlist and remove one entry from native side.
+            # A single remove is enough -- we only ever keep one item.
+            self._video.playlist.clear()
+            await self._video_call(
+                "playlist_remove", lambda: self._video.playlist_remove(0), timeout=1.0,
+            )
 
             if request_id != self._play_request_id:
                 return
@@ -660,18 +657,12 @@ class VideoPlayerComponent(ft.Column):
             
             # If bandwidth throttling is enabled, route through proxy
             if self._stream_proxy.is_throttle_enabled():
-                # Ensure proxy is running
                 if not self._stream_proxy.is_running():
                     await self._start_proxy_and_play(channel, request_id)
                     return
-                
-                # Register stream with proxy and get throttled URL
                 stream_url = self._stream_proxy.register_stream(channel.url)
-                print(f"Throttled stream URL: {stream_url}")
             
-            # ADD the new channel as the ONLY item
-            # Only use special options for VOD/movie/series streams
-            # Live streams don't need these and they can cause issues
+            # Build media object
             is_vod_or_series = (
                 "/movie/" in stream_url or 
                 "/series/" in stream_url or
@@ -681,75 +672,46 @@ class VideoPlayerComponent(ft.Column):
             )
             
             if is_vod_or_series:
-                # VOD/series: add headers and force-seekable for better compatibility
                 http_headers = {
                     "User-Agent": "IPTV Smarters Pro/2.2.2.5 (Linux; Android 10)",
                     "Accept": "*/*",
                     "Connection": "keep-alive",
                 }
-                # Note: flet-video's 'extras' parameter is for metadata only, not MPV options
-                # The force-seekable option cannot be set through flet-video API
-                # Save stream info for IPC queries
                 self._current_stream_url = stream_url
-                
-                media = fv.VideoMedia(
-                    resource=stream_url,
-                    http_headers=http_headers,
-                )
+                media = fv.VideoMedia(resource=stream_url, http_headers=http_headers)
             else:
-                # Live streams: no special options (was working before)
                 media = fv.VideoMedia(resource=stream_url)
-            
-            # Make video container visible BEFORE loading media so the native
-            # control is mounted and can respond to invoke_method calls.
-            self._loading_indicator.visible = False
-            self._video_container.visible = True
-            if self.page:
-                self.page.update()
-            await asyncio.sleep(0.1)
             
             if request_id != self._play_request_id:
                 return
             
-            # Use direct playlist property assignment as primary method.
-            # This avoids invoke_method listener timeout issues on Windows.
-            try:
-                self._video.playlist = [media]
-                self._video.autoplay = True
-                if self.page:
-                    self._video.update()
-                await asyncio.sleep(0.2)
-            except Exception as ex:
-                # Fallback to playlist_add if direct assignment fails
-                print(f"Direct playlist assignment failed ({ex}), trying playlist_add")
-                add_ok = await self._video_call(
-                    "playlist_add",
-                    lambda: self._video.playlist_add(media),
-                    timeout=12.0 * _TIMEOUT_MULT,
-                    required=False,
-                    retries=2,
-                )
-                if not add_ok:
-                    raise RuntimeError("Cannot load media into player")
-            
-            # JUMP to index 0
-            await self._video_call("jump_to", lambda: self._video.jump_to(0), timeout=3.0 * _TIMEOUT_MULT)
-            
-            # PLAY
+            # Add media via invoke_method so native player receives it.
             await self._video_call(
-                "play",
-                lambda: self._video.play(),
-                timeout=6.0 * _TIMEOUT_MULT,
-                required=False,
+                "playlist_add",
+                lambda: self._video.playlist_add(media),
+                timeout=12.0 * _TIMEOUT_MULT,
+                required=True,
                 retries=2,
             )
+            
+            # Jump and play
+            await self._video_call(
+                "jump_to", lambda: self._video.jump_to(0), timeout=3.0 * _TIMEOUT_MULT,
+            )
+            await self._video_call(
+                "play", lambda: self._video.play(),
+                timeout=6.0 * _TIMEOUT_MULT, retries=2,
+            )
+            
             self._is_playing = True
+            self._buffering_overlay.hide()
             
             if self.page:
                 self.page.update()
 
         except Exception as e:
             print(f"Play Error: {e}")
+            self._buffering_overlay.hide()
             self._loading_indicator.visible = False
             self._welcome.visible = True
             self._video_container.visible = False
@@ -783,6 +745,9 @@ class VideoPlayerComponent(ft.Column):
         # Reset extension fallback state on successful load
         self._current_extension_index = 0
         self._original_url = ""
+        
+        # Hide buffering overlay now that video is loaded
+        self._buffering_overlay.hide()
         
         # Update connection status
         self._update_connection_status(True, "Connected")
