@@ -60,6 +60,9 @@ class VideoPlayerComponent(ft.Column):
         # Resume position (set externally before play_channel)
         self._resume_position_ms: int = 0
         
+        # Track whether the native video control has been mounted at least once
+        self._native_mounted: bool = False
+        
         # Extension fallback for series streams
         # Many providers don't correctly report container_extension, so we try common formats
         self._extension_fallbacks = ["mkv", "ts", "mp4", "avi"]
@@ -567,13 +570,18 @@ class VideoPlayerComponent(ft.Column):
         """Stop the native video player and clear playlist."""
         if not self._video:
             return
-        # Use the real stop method to release the stream, not just pause
-        await self._video_call("stop", lambda: self._video.stop(), timeout=2.0, use_lock=False)
-        # Clear playlist so old media doesn't linger
-        self._video.playlist.clear()
-        await self._video_call(
-            "playlist_remove", lambda: self._video.playlist_remove(0), timeout=1.0,
-        )
+        try:
+            # Pause first (more reliable than stop across platforms)
+            await self._video_call("pause", lambda: self._video.pause(), timeout=1.5, use_lock=False)
+            # Clear playlist so old media doesn't linger
+            if self._video.playlist:
+                self._video.playlist.clear()
+                await self._video_call(
+                    "playlist_remove", lambda: self._video.playlist_remove(0), timeout=1.0,
+                )
+        except Exception:
+            # Session may be closed (app shutting down) -- ignore silently
+            pass
 
     async def _video_call(
         self,
@@ -618,8 +626,16 @@ class VideoPlayerComponent(ft.Column):
                         raise RuntimeError(f"Timeout during video command: {name}") from ex
                     return False
                 await asyncio.sleep(0.15 * attempt)
-            except RuntimeError:
-                raise
+            except RuntimeError as ex:
+                err_msg = str(ex).lower()
+                # "Session closed" means the page/app is shutting down -- never propagate
+                if "session closed" in err_msg or "session is closed" in err_msg:
+                    print(f"Video command aborted ({name}): session closed")
+                    return False
+                # Our own timeout RuntimeErrors should propagate for required calls
+                if required:
+                    raise
+                return False
             except Exception as ex:
                 # Removing from an empty playlist is expected while resetting state.
                 if name == "playlist_remove" and "out of range" in str(ex).lower():
@@ -738,6 +754,14 @@ class VideoPlayerComponent(ft.Column):
             if request_id != self._play_request_id:
                 return
             
+            # On first play, wait for the native control to mount.
+            # The on_load event fires once the widget is ready to accept commands.
+            if not self._native_mounted:
+                for _ in range(20):  # Up to ~2s
+                    if self._native_mounted:
+                        break
+                    await asyncio.sleep(0.1)
+            
             # Add media via invoke_method so native player receives it.
             await self._video_call(
                 "playlist_add",
@@ -806,6 +830,9 @@ class VideoPlayerComponent(ft.Column):
     def _on_video_loaded(self, e):
         """Handle video loaded event."""
         print(f"Video loaded! Data: {e.data if hasattr(e, 'data') else 'No Data'}")
+        
+        # Mark native control as ready
+        self._native_mounted = True
         
         # Reset retry count on successful load
         self._retry_count = 0
