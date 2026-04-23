@@ -1,5 +1,6 @@
 """Xtream Codes API client for IPTV providers."""
 import httpx
+import os
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from ..models.channel import Channel
@@ -75,11 +76,12 @@ class XtreamCodesClient:
     
     def _create_client(self) -> httpx.AsyncClient:
         """Create configured HTTP client."""
+        allow_insecure_ssl = os.getenv("IPTV_INSECURE_SSL", "0").lower() in {"1", "true", "yes"}
         return httpx.AsyncClient(
             timeout=self.TIMEOUT,
             follow_redirects=True,
             headers=self.DEFAULT_HEADERS,
-            verify=False,  # Some IPTV servers have invalid SSL certs
+            verify=not allow_insecure_ssl,
             http2=False,   # Force HTTP/1.1 for better compatibility
         )
     

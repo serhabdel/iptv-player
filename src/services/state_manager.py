@@ -6,6 +6,11 @@ from typing import List, Optional, Set, Callable, Dict, TYPE_CHECKING
 from ..models.channel import Channel
 from ..models.playlist import Playlist
 
+try:
+    import keyring
+except Exception:
+    keyring = None
+
 if TYPE_CHECKING:
     from .xtream_client import XtreamCredentials
 
@@ -31,6 +36,7 @@ class StateManager:
         self._playback_positions_file = self.data_dir / "playback_positions.json"
         self._channels_cache_dir = self.data_dir / "cache"
         self._channels_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._keyring_service = "iptv-player.xtream"
         
         # In-memory state
         self._playlists: List[Playlist] = []
@@ -220,11 +226,14 @@ class StateManager:
             cache_path.write_text(json.dumps(channels_data))
             
             # Metadata for playlist
+            metadata = dict(playlist.metadata or {})
+            # Never persist sensitive credentials inside playlist cache metadata.
+            metadata.pop("password", None)
             playlists_data.append({
                 "name": playlist.name,
                 "source": playlist.source,
                 "cache_file": cache_file,
-                "metadata": playlist.metadata,
+                "metadata": metadata,
             })
             
 
@@ -400,18 +409,75 @@ class StateManager:
             callback()
     
     # Xtream Codes Provider Management
+    def _xtream_secret_key(self, server: str, username: str) -> str:
+        return f"{server.strip().lower()}|{username.strip().lower()}"
+
+    def _set_xtream_password(self, server: str, username: str, password: str):
+        if not password or keyring is None:
+            return
+        try:
+            keyring.set_password(self._keyring_service, self._xtream_secret_key(server, username), password)
+        except Exception:
+            pass
+
+    def _get_xtream_password(self, server: str, username: str) -> str:
+        if keyring is None:
+            return ""
+        try:
+            return keyring.get_password(self._keyring_service, self._xtream_secret_key(server, username)) or ""
+        except Exception:
+            return ""
+
+    def _delete_xtream_password(self, server: str, username: str):
+        if keyring is None:
+            return
+        try:
+            keyring.delete_password(self._keyring_service, self._xtream_secret_key(server, username))
+        except Exception:
+            pass
+
     def _load_xtream_providers(self):
         """Load Xtream Codes providers from file."""
         if self._xtream_file.exists():
             try:
                 data = json.loads(self._xtream_file.read_text())
-                self._xtream_providers = data.get("providers", [])
+                loaded = []
+                needs_save = False
+
+                for provider in data.get("providers", []):
+                    item = dict(provider)
+                    server = item.get("server", "")
+                    username = item.get("username", "")
+
+                    # Legacy migration: move plaintext password from file to keyring.
+                    plaintext_password = item.get("password", "")
+                    if plaintext_password:
+                        self._set_xtream_password(server, username, plaintext_password)
+                        item.pop("password", None)
+                        needs_save = True
+
+                    item["password"] = self._get_xtream_password(server, username)
+                    loaded.append(item)
+
+                self._xtream_providers = loaded
+
+                if needs_save:
+                    self._save_xtream_providers()
             except Exception:
                 self._xtream_providers = []
     
     def _save_xtream_providers(self):
         """Save Xtream Codes providers to file."""
-        data = {"providers": self._xtream_providers}
+        providers = []
+        for provider in self._xtream_providers:
+            item = dict(provider)
+            server = item.get("server", "")
+            username = item.get("username", "")
+            password = item.pop("password", "")
+            self._set_xtream_password(server, username, password)
+            providers.append(item)
+
+        data = {"providers": providers}
         self._xtream_file.write_text(json.dumps(data, indent=2))
     
     def add_xtream_provider(self, credentials: "XtreamCredentials"):
@@ -434,6 +500,7 @@ class StateManager:
             p for p in self._xtream_providers
             if not (p.get("server") == server and p.get("username") == username)
         ]
+        self._delete_xtream_password(server, username)
         self._save_xtream_providers()
         self._notify_playlist_change()
     

@@ -238,7 +238,21 @@ class IPTVApp:
                  raise Exception("Missing credentials in playlist")
 
             print(f"Loading series episodes for {channel.series_name} (ID: {channel.series_id})")
-            creds = XtreamCredentials.from_dict(playlist.metadata)
+
+            metadata = dict(playlist.metadata or {})
+            if not metadata.get("password"):
+                server = metadata.get("server", "")
+                username = metadata.get("username", "")
+                for provider in self.state.get_xtream_providers():
+                    if provider.get("server") == server and provider.get("username") == username:
+                        metadata["password"] = provider.get("password", "")
+                        metadata.setdefault("name", provider.get("name", "Xtream Provider"))
+                        break
+
+            if not metadata.get("password"):
+                raise Exception("Missing Xtream credentials. Re-add provider in Settings.")
+
+            creds = XtreamCredentials.from_dict(metadata)
             client = XtreamCodesClient(creds)
             
             # Fetch details
@@ -300,7 +314,8 @@ class IPTVApp:
     
     def _on_keyboard(self, e: ft.KeyboardEvent):
         """Handle global keyboard events."""
-        if e.key == "Escape" or e.key == "Backspace":
+        # Keep Backspace for text editing in input fields; use Escape for navigation.
+        if e.key == "Escape":
             if self._current_view == "player":
                 # Delegate to player view so it can save position and stop
                 self._player_view._handle_back_click(None)

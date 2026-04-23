@@ -852,7 +852,11 @@ class SettingsView(ft.Container):
                 name=f"Xtream: {username}",
                 source=f"xtream://{server}",
                 channels=channels,
-                metadata=credentials.to_dict(),  # Store credentials for lazy loading
+                metadata={
+                    "name": credentials.name,
+                    "server": credentials.server,
+                    "username": credentials.username,
+                },
             )
             self._state.add_playlist(playlist)
             
@@ -888,7 +892,11 @@ class SettingsView(ft.Container):
                 name=f"Xtream: {credentials.username}",
                 source=f"xtream://{credentials.server}",
                 channels=channels,
-                metadata=credentials.to_dict(),
+                metadata={
+                    "name": credentials.name,
+                    "server": credentials.server,
+                    "username": credentials.username,
+                },
             )
             
             # Remove old playlist with same source

@@ -61,8 +61,31 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-  build-windows:
+  quality-checks:
     needs: detect-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run smoke tests
+        run: pytest -q tests/test_smoke.py
+
+      - name: Verify Python sources compile
+        run: python -m compileall -q src
+
+  build-windows:
+    needs: [detect-release, quality-checks]
     runs-on: windows-latest
     env:
       APP_VERSION: ${{ needs.detect-release.outputs.version }}
@@ -104,7 +127,7 @@ jobs:
           path: dist/IPTV-Player-Setup-v${{ env.APP_VERSION }}.exe
 
   build-linux-deb:
-    needs: detect-release
+    needs: [detect-release, quality-checks]
     runs-on: ubuntu-latest
     env:
       APP_VERSION: ${{ needs.detect-release.outputs.version }}
@@ -171,7 +194,7 @@ jobs:
           path: iptv-player.deb
 
   build-linux-appimage:
-    needs: detect-release
+    needs: [detect-release, quality-checks]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -236,7 +259,7 @@ jobs:
           path: IPTV-Player-x86_64.AppImage
 
   build-macos:
-    needs: detect-release
+    needs: [detect-release, quality-checks]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,6 +1,7 @@
 """Local stream proxy server for casting to DLNA devices."""
 import asyncio
 import socket
+from urllib.parse import urlparse
 from typing import Optional, Callable
 from aiohttp import web, ClientSession, ClientTimeout
 import threading
@@ -42,9 +43,35 @@ class StreamProxyServer:
             return ip
         except Exception:
             return "127.0.0.1"
+
+    def _is_valid_stream_url(self, stream_url: str) -> bool:
+        """Allow only safe http(s) stream URLs for proxying."""
+        if not stream_url:
+            return False
+
+        try:
+            parsed = urlparse(stream_url)
+        except Exception:
+            return False
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return False
+
+        blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+        if hostname in blocked_hosts:
+            return False
+
+        return True
     
     def set_stream(self, stream_url: str) -> str:
         """Register a stream and return its proxy URL (Legacy/Simple)."""
+        if not self._is_valid_stream_url(stream_url):
+            raise ValueError("Invalid or unsafe stream URL")
+
         # For backward compatibility/simplicity, we clear old streams and set a 'default' one?
         # Actually, let's just register it with a fixed 'current' ID or new one.
         # Let's use a standard 'current' ID for simple usage.
@@ -54,6 +81,9 @@ class StreamProxyServer:
         
     def register_stream(self, stream_url: str) -> str:
         """Register a new stream and return its unique proxy URL."""
+        if not self._is_valid_stream_url(stream_url):
+            raise ValueError("Invalid or unsafe stream URL")
+
         stream_id = str(uuid.uuid4())[:8]
         self._streams[stream_id] = stream_url
         local_ip = self.get_local_ip()
@@ -120,18 +150,6 @@ class StreamProxyServer:
         
         current_url = target_url # Local var for clarity
         
-        # Handle HEAD requests (often used by TVs to check stream availability)
-        if request.method == 'HEAD':
-            return web.Response(
-                status=200,
-                headers={
-                    'Content-Type': content_type,
-                    'Accept-Ranges': 'bytes',  # Changed from none to bytes
-                    'Connection': 'keep-alive',
-                    'Access-Control-Allow-Origin': '*',
-                }
-            )
-        
         # Forward Range header if present (though many IPTV streams don't support it)
         headers = {}
         if 'Range' in request.headers:
@@ -145,6 +163,19 @@ class StreamProxyServer:
             content_type = 'video/mp4'
         elif path.endswith('.mkv'):
             content_type = 'video/x-matroska'
+
+        # Handle HEAD requests (often used by TVs to check stream availability)
+        if request.method == 'HEAD':
+            return web.Response(
+                status=200,
+                headers={
+                    'Content-Type': content_type,
+                    'Accept-Ranges': 'bytes',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            )
+
         # Stream from source to client
         timeout = ClientTimeout(total=None, connect=30, sock_read=60)
         

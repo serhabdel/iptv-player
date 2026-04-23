@@ -5,3 +5,4 @@ httpx
 aiofiles
 async-upnp-client
 aiohttp
+keyring
