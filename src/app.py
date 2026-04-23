@@ -18,6 +18,8 @@ class IPTVApp:
         self._current_view = "hub"
         self._current_content_type = "live"
         self._navigation_stack = []  # For back navigation
+        self._view_before_player = None
+        self._window_state_before_player = None
         
         self._setup_page()
         self._setup_views()
@@ -133,10 +135,50 @@ class IPTVApp:
     
     def _show_player(self):
         """Show the player view with transition."""
+        self._view_before_player = self._current_view
+        self._window_state_before_player = self._capture_window_state()
         self._navigation_stack.append(self._current_view)
         self._current_view = "player"
         self._animate_view_switch(self._player_view)
         self._player_view.refresh()
+
+    def _capture_window_state(self):
+        """Capture the current window geometry and display mode."""
+        try:
+            return {
+                "width": self.page.window.width,
+                "height": self.page.window.height,
+                "left": getattr(self.page.window, "left", None),
+                "top": getattr(self.page.window, "top", None),
+                "full_screen": getattr(self.page.window, "full_screen", False),
+                "maximized": getattr(self.page.window, "maximized", False),
+            }
+        except Exception:
+            return None
+
+    def _restore_window_state(self):
+        """Restore the window geometry captured before playback started."""
+        if not self._window_state_before_player:
+            return
+
+        try:
+            state = self._window_state_before_player
+            if state.get("width"):
+                self.page.window.width = state["width"]
+            if state.get("height"):
+                self.page.window.height = state["height"]
+            if state.get("left") is not None:
+                self.page.window.left = state["left"]
+            if state.get("top") is not None:
+                self.page.window.top = state["top"]
+            if state.get("maximized") is not None:
+                self.page.window.maximized = state["maximized"]
+            if state.get("full_screen") is not None:
+                self.page.window.full_screen = state["full_screen"]
+        except Exception:
+            pass
+
+        self._window_state_before_player = None
     
     def _show_settings(self):
         """Show settings view with transition."""
@@ -169,8 +211,28 @@ class IPTVApp:
                 self._current_view = "hub"
                 self._hub_view.refresh()
                 self._animate_view_switch(self._hub_view)
+        elif self._view_before_player and self._view_before_player != "player":
+            # If the stack was cleared for any reason, return to the last non-player view.
+            previous = self._view_before_player
+            self._restore_window_state()
+
+            if previous == "content":
+                self._current_view = "content"
+                self._content_view.refresh()
+                self._animate_view_switch(self._content_view)
+            elif previous == "series":
+                self._current_view = "series"
+                self._animate_view_switch(self._series_view)
+            elif previous == "settings":
+                self._current_view = "settings"
+                self._animate_view_switch(self._settings_view)
+            else:
+                self._current_view = "hub"
+                self._hub_view.refresh()
+                self._animate_view_switch(self._hub_view)
         else:
             # No history, go to hub
+            self._restore_window_state()
             self._show_hub()
     
     def _on_hub_select(self, hub_id: str):
