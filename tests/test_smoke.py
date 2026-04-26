@@ -1,3 +1,6 @@
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pytest
 from src.services.m3u_parser import M3UParser
 from src.services.stream_proxy import StreamProxyServer
