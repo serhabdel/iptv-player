@@ -33,6 +33,7 @@ class IPTVMainWindow(QMainWindow):
         self._view_before_player: Optional[str] = None
         self._window_geo_before_player: Optional[bytes] = None
         self._content_state_before_player: Optional[dict] = None
+        self._series_state_before_player: Optional[dict] = None
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -166,6 +167,8 @@ class IPTVMainWindow(QMainWindow):
         self._window_geo_before_player = self.saveGeometry()
         if self._current_view == "content":
             self._content_state_before_player = self._content_view.capture_state()
+        elif self._current_view == "series":
+            self._series_state_before_player = self._series_view.capture_state()
         self._nav_stack.append(self._current_view)
         self._current_view = "player"
         self._player_view.refresh()
@@ -204,6 +207,9 @@ class IPTVMainWindow(QMainWindow):
                 self._show_view("player")
             elif prev == "series":
                 self._current_view = "series"
+                if self._series_state_before_player:
+                    self._series_view.restore_state(self._series_state_before_player)
+                    self._series_state_before_player = None
                 self._show_view("series")
             elif prev == "settings":
                 self._current_view = "settings"
@@ -218,6 +224,9 @@ class IPTVMainWindow(QMainWindow):
                 self._show_view("content")
             elif prev == "series":
                 self._current_view = "series"
+                if self._series_state_before_player:
+                    self._series_view.restore_state(self._series_state_before_player)
+                    self._series_state_before_player = None
                 self._show_view("series")
             elif prev == "settings":
                 self._current_view = "settings"

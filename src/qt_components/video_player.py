@@ -41,6 +41,7 @@ class VideoPlayerComponent(QWidget):
         self._original_url = ""
         self._ext_fallbacks = ["mkv", "ts", "mp4", "avi"]
         self._ext_index = 0
+        self._current_playback_url = ""
         self._episode_context: List[Channel] = []
         self._system_boost = 100
         self._muted = False
@@ -53,6 +54,12 @@ class VideoPlayerComponent(QWidget):
         self._mkv_retry_timer = QTimer()
         self._mkv_retry_timer.setSingleShot(True)
         self._mkv_retry_timer.timeout.connect(self._do_mkv_retry)
+
+        # Deferred fallback timer to break synchronous error cascades
+        self._fallback_timer = QTimer()
+        self._fallback_timer.setSingleShot(True)
+        self._fallback_timer.timeout.connect(self._do_fallback_load)
+        self._pending_fallback_url = ""
 
         self._setup_player()
         self._setup_ui()
@@ -358,6 +365,7 @@ class VideoPlayerComponent(QWidget):
         self._ext_index = 0
         self._original_url = ""
         self._mkv_auto_retried = False
+        self._current_playback_url = channel.url
         self._channel_label.setText(channel.name)
         self._detect_quality(channel.name)
 
@@ -378,9 +386,11 @@ class VideoPlayerComponent(QWidget):
                 return
             url = self._stream_proxy.register_stream(channel.url)
 
+        self._current_playback_url = url
         self._load_stream(url)
 
     def _load_stream(self, url: str):
+        self._current_playback_url = url
         self._player.stop()
         self._is_playing = False
         self._welcome.setVisible(False)
@@ -444,17 +454,13 @@ class VideoPlayerComponent(QWidget):
             # For live streams or very short playback, treat as an error
             content_type = getattr(self._current_channel, "content_type", "live")
             if content_type == "live" or self._player.position() < 5000:
-                if not self._try_next_extension():
-                    self._error_label.setText("Stream ended unexpectedly")
-                    self._error_overlay.setVisible(True)
-                    self._position_overlays()
+                self._error_label.setText("Stream ended unexpectedly")
+                self._error_overlay.setVisible(True)
+                self._position_overlays()
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
             self._buffer_overlay.setVisible(False)
             self._is_playing = False
-            if not self._try_next_extension():
-                self._error_label.setText("Failed to load stream\nInvalid or unsupported media")
-                self._error_overlay.setVisible(True)
-                self._position_overlays()
+            # Extension fallback and error UI are handled by _on_error to avoid double attempts
         elif status == QMediaPlayer.MediaStatus.StalledMedia:
             self._buffer_overlay.setVisible(True)
             self._buffer_label.setText("Stalled... reconnecting")
@@ -540,8 +546,6 @@ class VideoPlayerComponent(QWidget):
                 self.error.emit(error_string)
                 return
             # Auto-retry once for transient MKV issues (network hiccup, partial cache)
-            if not hasattr(self, '_mkv_auto_retried'):
-                self._mkv_auto_retried = False
             if not self._mkv_auto_retried and pos > 0:
                 self._mkv_auto_retried = True
                 self._resume_ms = max(0, pos - 5000)  # Resume ~5 s before failure
@@ -574,15 +578,26 @@ class VideoPlayerComponent(QWidget):
             return False
         if not self._original_url:
             self._original_url = url
-        self._ext_index += 1
         if self._ext_index >= len(self._ext_fallbacks):
             return False
         import re
         base = re.sub(r'\.[a-zA-Z0-9]+$', '', self._original_url)
         new_url = f"{base}.{self._ext_fallbacks[self._ext_index]}"
-        self._current_channel.url = new_url
-        self._load_stream(new_url)
+        self._ext_index += 1
+        # Skip if this produces the exact same URL we already tried
+        if new_url == self._current_playback_url or new_url == self._original_url:
+            return self._try_next_extension()
+        self._current_playback_url = new_url
+        # Defer load to break synchronous signal cascades from setSource()
+        self._pending_fallback_url = new_url
+        self._fallback_timer.start(100)
         return True
+
+    def _do_fallback_load(self):
+        """Load the pending fallback URL after a brief deferral."""
+        if self._pending_fallback_url:
+            self._load_stream(self._pending_fallback_url)
+            self._pending_fallback_url = ""
 
     def _do_mkv_retry(self):
         """Auto-retry the same MKV/WebM stream after a transient error."""
@@ -590,7 +605,7 @@ class VideoPlayerComponent(QWidget):
             return
         print(f"Auto-retrying MKV stream at ~{self._resume_ms} ms")
         self._error_overlay.setVisible(False)
-        self._load_stream(self._current_channel.url)
+        self._load_stream(self._current_playback_url)
 
     def toggle_play(self):
         """Toggle play/pause (public API for keyboard shortcuts)."""
@@ -742,7 +757,7 @@ class VideoPlayerComponent(QWidget):
         if self._retry_count <= self._max_retries:
             self._error_overlay.setVisible(False)
             self._buffer_overlay.setVisible(True)
-            self._load_stream(self._current_channel.url)
+            self._load_stream(self._current_playback_url)
         else:
             self._error_label.setText("Unable to connect\nMaximum retry attempts reached.")
 
@@ -751,6 +766,8 @@ class VideoPlayerComponent(QWidget):
         self._retry_count = 0
         self._ext_index = 0
         self._original_url = ""
+        self._current_playback_url = ""
+        self._pending_fallback_url = ""
         self._welcome.setVisible(True)
         self.stop()
 
@@ -760,10 +777,25 @@ class VideoPlayerComponent(QWidget):
         self._welcome.setVisible(True)
         self._buffer_overlay.setVisible(False)
         self._error_overlay.setVisible(False)
+        self._mkv_retry_timer.stop()
+        self._seek_debounce.stop()
+        self._hide_timer.stop()
+        self._fallback_timer.stop()
+        self._pending_fallback_url = ""
+
+    def cleanup_resources(self):
+        """Stop DLNA casting and stream proxy to prevent background leaks."""
+        try:
+            asyncio.create_task(self._dlna_service.stop_casting())
+        except Exception:
+            pass
+        if self._stream_proxy.is_running():
+            try:
+                asyncio.create_task(self._stream_proxy.stop())
+            except Exception:
+                pass
 
     def get_position_info(self) -> tuple:
-        if not self._is_playing:
-            return (0, 0)
         return (self._player.position(), self._player.duration())
 
 

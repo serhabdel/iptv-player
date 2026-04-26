@@ -107,7 +107,12 @@ class PlayerView(QWidget):
             self._update_fav_btn(current)
 
     def handle_back(self):
+        current = self._state.get_current_channel()
+        if current:
+            pos, dur = self._video_player.get_position_info()
+            self._state.save_playback_position(current, pos, dur)
         self._video_player.stop()
+        self._video_player.cleanup_resources()
         if self._on_back:
             self._on_back()
 

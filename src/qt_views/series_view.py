@@ -144,6 +144,20 @@ class SeriesView(QWidget):
         if ep and self._on_play_episode:
             self._on_play_episode(ep)
 
+    def capture_state(self) -> dict:
+        return {
+            "series_name": self._series_name,
+            "selected_season_index": self._season_combo.currentIndex(),
+        }
+
+    def restore_state(self, state: Optional[dict]):
+        if not state:
+            return
+        idx = state.get("selected_season_index", 0)
+        if 0 <= idx < self._season_combo.count():
+            self._season_combo.setCurrentIndex(idx)
+
+
     def _play_first(self):
         if not self._sorted_seasons:
             return
