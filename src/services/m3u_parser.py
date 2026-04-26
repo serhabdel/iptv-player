@@ -156,32 +156,72 @@ class M3UParser:
         )
     
     @classmethod
+    def _detect_category_header(cls, name: str) -> tuple[bool, str]:
+        """Detect if a channel name is an inline category header.
+
+        Returns (is_header, category_name).  Handles patterns like:
+        ✦✦✦| CATEGORY |✦✦✦   ★★★ CATEGORY ★★★   --- CATEGORY ---
+        """
+        name = name.strip()
+        if len(name) < 8:
+            return False, ""
+
+        # Leading decorative chars (non-alphanumeric, non-space)
+        leading = re.match(r'^([^\w\s]+)', name)
+        if not leading or len(leading.group(1)) < 3:
+            return False, ""
+
+        # Trailing decorative chars
+        trailing = re.search(r'([^\w\s]+)$', name)
+        if not trailing or len(trailing.group(1)) < 3:
+            return False, ""
+
+        # Extract middle text
+        middle = name[leading.end():trailing.start()].strip()
+        # Strip separators like | ] [ etc.
+        middle = re.sub(r'^[|│\]\[\-–—=]+\s*', '', middle)
+        middle = re.sub(r'\s*[|│\]\[\-–—=]+$', '', middle)
+        middle = middle.strip()
+
+        if middle and len(middle) > 1:
+            return True, middle
+        return False, ""
+
+    @classmethod
     def _parse_content(cls, content: str) -> List[Channel]:
         """Parse M3U content and return list of channels."""
         channels = []
         lines = content.splitlines()
-        
+
         current_extinf = None
-        
-        for i, line in enumerate(lines):
+        detected_category = ""
+
+        for line in lines:
             line = line.strip()
-            
             if not line:
                 continue
-            
+
             # Check for EXTINF line
             if line.startswith('#EXTINF:'):
                 current_extinf = line
                 continue
-            
+
             # Check for URL line (after EXTINF)
             if current_extinf and not line.startswith('#'):
-                # This is a stream URL
-                channel = cls._parse_channel(current_extinf, line)
+                channel = cls._parse_channel(current_extinf, line, detected_category)
                 if channel:
-                    channels.append(channel)
+                    # Check if this is a category header masquerading as a channel
+                    is_header, cat_name = cls._detect_category_header(channel.name)
+                    if is_header:
+                        # Update category for subsequent channels, skip the header itself
+                        detected_category = cat_name
+                    else:
+                        # If no group-title was provided, use the detected category
+                        if channel.group in ("Uncategorized", "", "Live TV") and detected_category:
+                            channel.group = detected_category
+                        channels.append(channel)
                 current_extinf = None
-        
+
         return channels
     
     @classmethod
@@ -236,7 +276,7 @@ class M3UParser:
         return 'live'
     
     @classmethod
-    def _parse_channel(cls, extinf_line: str, url: str) -> Optional[Channel]:
+    def _parse_channel(cls, extinf_line: str, url: str, detected_category: str = "") -> Optional[Channel]:
         """Parse a single channel from EXTINF line and URL."""
         try:
             # Extract the channel name - it's after the last comma
@@ -285,8 +325,8 @@ class M3UParser:
                 if logo_match:
                     logo = logo_match.group(1)
             
-            # Extract group
-            group = "Uncategorized"
+            # Extract group from group-title attribute, fall back to detected inline category
+            group = detected_category or "Uncategorized"
             group_match = re.search(r'group-title="([^"]*)"', extinf_line, re.IGNORECASE)
             if group_match and group_match.group(1):
                 group = group_match.group(1)

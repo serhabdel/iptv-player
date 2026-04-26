@@ -1,1 +1,1 @@
-# IPTV Player - Python Flet Application
+# IPTV Player - PySide6 Desktop Application

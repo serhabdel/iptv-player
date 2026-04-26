@@ -103,34 +103,47 @@ class StateManager:
         self._load_playback_positions()
     
     def _load_playlist_from_cache(self, p_data: dict) -> Optional[Playlist]:
-        """Load a playlist from cache."""
+        """Load a playlist from cache, with inline category header migration."""
         try:
             name = p_data.get("name", "Playlist")
             source = p_data.get("source", "")
             cache_file = p_data.get("cache_file", "")
-            
+
             if cache_file:
                 cache_path = self._channels_cache_dir / cache_file
                 if cache_path.exists():
                     channels_data = json.loads(cache_path.read_text())
                     channels = []
+                    detected_category = ""
                     for ch_data in channels_data:
+                        # Migrate inline category headers
+                        from ..services.m3u_parser import M3UParser
+                        ch_name = ch_data.get("name", "")
+                        is_header, cat_name = M3UParser._detect_category_header(ch_name)
+                        if is_header:
+                            detected_category = cat_name
+                            continue  # skip header entries
+
                         # Get content type (may be missing in old caches)
                         content_type = ch_data.get("content_type", None)
-                        
+
                         # Auto-classify if missing
                         if not content_type:
                             content_type = self._detect_content_type(
-                                ch_data.get("name", ""),
+                                ch_name,
                                 ch_data.get("group", ""),
                                 ch_data.get("url", "")
                             )
-                        
+
+                        group = ch_data.get("group", "Uncategorized")
+                        if detected_category and group in ("Uncategorized", "", "Live TV"):
+                            group = detected_category
+
                         channel = Channel(
-                            name=ch_data.get("name", "Unknown"),
+                            name=ch_name,
                             url=ch_data.get("url", ""),
                             logo=ch_data.get("logo", ""),
-                            group=ch_data.get("group", "Uncategorized"),
+                            group=group,
                             is_favorite=ch_data.get("url", "") in self._favorites,
                             content_type=content_type,
                             series_id=ch_data.get("series_id"),
@@ -141,7 +154,7 @@ class StateManager:
                             episode=ch_data.get("episode"),
                         )
                         channels.append(channel)
-                    
+
                     return Playlist(
                         name=name, 
                         source=source, 
@@ -686,7 +699,12 @@ class StateManager:
         if url in self._playback_positions:
             del self._playback_positions[url]
             self._save_playback_positions()
-    
+
+    def clear_playback_positions(self):
+        """Clear all saved playback positions."""
+        self._playback_positions.clear()
+        self._save_playback_positions()
+
     def get_continue_watching(self, limit: int = 20) -> List[dict]:
         """Get list of items with saved positions, sorted by most recent.
         

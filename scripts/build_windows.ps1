@@ -41,6 +41,10 @@ Write-Host "Installing dependencies in local virtual environment..."
 & $VenvPython -m pip install --upgrade pip setuptools wheel
 & $VenvPython -m pip install -r requirements.txt pyinstaller
 
+# Ensure PySide6 plugins are discoverable by PyInstaller
+$env:QT_QPA_PLATFORM_PLUGIN_PATH = & $VenvPython -c "import PySide6; print(PySide6.__path__[0])"
+Write-Host "PySide6 path: $env:QT_QPA_PLATFORM_PLUGIN_PATH"
+
 Write-Host "Cleaning previous build outputs..."
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
 if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }

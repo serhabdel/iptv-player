@@ -1,22 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+import PySide6
 
-
-flet_datas = collect_data_files('flet')
-flet_desktop_datas = collect_data_files('flet_desktop')
-flet_video_datas = collect_data_files('flet_video')
+pyside6_datas = collect_data_files('PySide6')
+pyside6_binaries = collect_dynamic_libs('PySide6')
+qtawesome_datas = collect_data_files('qtawesome')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('assets', 'assets'), ('src', 'src'), ('LICENSE', '.')] + flet_datas + flet_desktop_datas + flet_video_datas,
-    hiddenimports=['flet_desktop', 'flet_video'],
+    binaries=pyside6_binaries,
+    datas=[('assets', 'assets'), ('src', 'src'), ('LICENSE', '.')] + pyside6_datas + qtawesome_datas,
+    hiddenimports=['PySide6', 'qasync', 'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets', 'qtawesome'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['flet', 'flet_desktop', 'flet_video'],
     noarchive=False,
     optimize=0,
 )
@@ -40,7 +40,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon='assets/logo.png',
 )
 
 coll = COLLECT(
