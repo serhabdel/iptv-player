@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QFrame, QDialog, QListWidget, QListWidgetItem,
     QMessageBox, QSizePolicy, QComboBox, QProgressBar, QToolButton,
 )
-from PySide6.QtCore import Qt, QTimer, QUrl, QSize, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, QSize, Signal, QEvent
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaMetaData
 from PySide6.QtMultimediaWidgets import QVideoWidget
 import qtawesome as qta
@@ -22,6 +22,8 @@ class VideoPlayerComponent(QWidget):
     error = Signal(str)
     next_requested = Signal()
     prev_requested = Signal()
+    theater_changed = Signal(bool)
+    toggle_fullscreen_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,6 +45,9 @@ class VideoPlayerComponent(QWidget):
         self._system_boost = 100
         self._muted = False
         self._last_volume = 100
+        self._is_theater = False
+        self._chrome_visible = True
+        self._seek_bar_normal_visible = False
 
         # Auto-retry for transient MKV/WebM errors
         self._mkv_retry_timer = QTimer()
@@ -203,6 +208,20 @@ class VideoPlayerComponent(QWidget):
         wel_layout.addWidget(wel_msg)
         wel_layout.addStretch()
 
+        # Let mouse events pass through overlays to the video widget
+        for overlay in (self._buffer_overlay, self._error_overlay, self._welcome):
+            overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        # Double-click + mouse-move tracking for theater mode
+        self._video_widget.setMouseTracking(True)
+        self._video_widget.installEventFilter(self)
+
+        # Timer to auto-hide chrome after 3 s of mouse inactivity
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.setInterval(3000)
+        self._hide_timer.timeout.connect(self._hide_chrome)
+
         # Control bar
         self._control_bar = QWidget()
         self._control_bar.setObjectName("controlBar")
@@ -345,6 +364,7 @@ class VideoPlayerComponent(QWidget):
         # Show seek bar for non-live content
         content_type = getattr(channel, "content_type", "live")
         is_seekable = content_type != "live"
+        self._seek_bar_normal_visible = is_seekable
         self._seek_bar.setVisible(is_seekable)
         if not is_seekable:
             self._seek_slider.setRange(0, 0)
@@ -672,11 +692,48 @@ class VideoPlayerComponent(QWidget):
         dialog.exec()
 
     def _toggle_fullscreen(self):
-        win = self.window()
-        if win.isFullScreen():
-            win.showNormal()
+        self.toggle_fullscreen_requested.emit()
+
+    def _set_theater_mode(self, active: bool):
+        self._is_theater = active
+        self._fs_btn.setIcon(qta.icon("mdi.fullscreen-exit" if active else "mdi.fullscreen", color="#7b90b8"))
+        if active:
+            self._hide_chrome()
         else:
-            win.showFullScreen()
+            self._show_chrome_permanently()
+        self.theater_changed.emit(active)
+
+    def _show_chrome_temporarily(self):
+        self._info_bar.setVisible(True)
+        self._seek_bar.setVisible(self._seek_bar_normal_visible)
+        self._control_bar.setVisible(True)
+        self._chrome_visible = True
+        self._hide_timer.start(3000)
+
+    def _hide_chrome(self):
+        self._info_bar.setVisible(False)
+        self._seek_bar.setVisible(False)
+        self._control_bar.setVisible(False)
+        self._chrome_visible = False
+
+    def _show_chrome_permanently(self):
+        self._info_bar.setVisible(True)
+        self._seek_bar.setVisible(self._seek_bar_normal_visible)
+        self._control_bar.setVisible(True)
+        self._chrome_visible = True
+        self._hide_timer.stop()
+
+    def set_theater_mode(self, active: bool):
+        self._set_theater_mode(active)
+
+    def eventFilter(self, obj, event):
+        if obj is self._video_widget:
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                self._toggle_fullscreen()
+                return True
+            if event.type() == QEvent.Type.MouseMove and self._is_theater:
+                self._show_chrome_temporarily()
+        return super().eventFilter(obj, event)
 
     def _retry_playback(self):
         if not self._current_channel:

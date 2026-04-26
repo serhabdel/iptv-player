@@ -110,10 +110,13 @@ class IPTVMainWindow(QMainWindow):
             self._go_back()
 
     def _toggle_fullscreen(self):
-        if self.isFullScreen():
-            self.showNormal()
-        else:
+        entering = not self.isFullScreen()
+        if entering:
             self.showFullScreen()
+        else:
+            self.showNormal()
+        if self._current_view == "player":
+            self._player_view.set_theater_mode(entering)
 
     def _shortcut_play_pause(self):
         if self._current_view == "player":

@@ -104,7 +104,9 @@ jobs:
           pip install pyinstaller
 
       - name: Build with PyInstaller
-        run: pyinstaller iptv-player.spec
+        run: |
+          pip install Pillow
+          pyinstaller iptv-player.spec
 
       - name: Install Inno Setup
         run: choco install innosetup -y
@@ -114,11 +116,22 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" "scripts\windows\iptv-player.iss"
 
+      - name: Zip portable app for release
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\iptv-player\*" -DestinationPath "dist\IPTV-Player-Portable-v${env:APP_VERSION}.zip"
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: iptv-player-windows-portable
           path: dist/iptv-player
+
+      - name: Upload Windows portable zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-player-windows-portable-zip
+          path: dist/IPTV-Player-Portable-v${{ env.APP_VERSION }}.zip
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
@@ -146,7 +159,13 @@ jobs:
           pip install pyinstaller
 
       - name: Build binary with PyInstaller
-        run: pyinstaller --onefile --noconsole --name iptv-player --add-data "assets:assets" --add-data "src:src" --add-data "LICENSE:." main.py
+        run: |
+          pyinstaller --onefile --noconsole --name iptv-player \
+            --add-data "assets:assets" --add-data "src:src" --add-data "LICENSE:." \
+            --collect-data qtawesome --collect-data PySide6 \
+            --hidden-import PySide6.QtMultimedia --hidden-import PySide6.QtMultimediaWidgets \
+            --exclude-module flet --exclude-module flet_desktop --exclude-module flet_video \
+            main.py
 
       - name: Create Debian package structure
         run: |
@@ -170,7 +189,7 @@ jobs:
           Architecture: amd64
           Maintainer: IPTV Player <iptv-player@example.com>
           Description: Cross-platform IPTV Player
-           A modern IPTV player built with Python and Flet.
+           A modern IPTV player built with Python and PySide6.
            Supports M3U playlists and Xtream Codes API.
           EOF
 
@@ -211,7 +230,13 @@ jobs:
           pip install pyinstaller
 
       - name: Build binary with PyInstaller
-        run: pyinstaller --onefile --noconsole --name iptv-player --add-data "assets:assets" --add-data "src:src" --add-data "LICENSE:." main.py
+        run: |
+          pyinstaller --onefile --noconsole --name iptv-player \
+            --add-data "assets:assets" --add-data "src:src" --add-data "LICENSE:." \
+            --collect-data qtawesome --collect-data PySide6 \
+            --hidden-import PySide6.QtMultimedia --hidden-import PySide6.QtMultimediaWidgets \
+            --exclude-module flet --exclude-module flet_desktop --exclude-module flet_video \
+            main.py
 
       - name: Create AppImage
         run: |
@@ -277,7 +302,12 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "IPTV Player" --add-data "assets:assets" --add-data "src:src" --add-data "LICENSE:." main.py
+          pyinstaller --onefile --windowed --name "IPTV Player" \
+            --add-data "assets:assets" --add-data "src:src" --add-data "LICENSE:." \
+            --collect-data qtawesome --collect-data PySide6 \
+            --hidden-import PySide6.QtMultimedia --hidden-import PySide6.QtMultimediaWidgets \
+            --exclude-module flet --exclude-module flet_desktop --exclude-module flet_video \
+            main.py
 
           mkdir -p dmg_contents
           cp -r "dist/IPTV Player.app" dmg_contents/ 2>/dev/null || cp dist/"IPTV Player" dmg_contents/
@@ -312,7 +342,7 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/iptv-player-windows-portable/iptv-player.exe
+            artifacts/iptv-player-windows-portable-zip/IPTV-Player-Portable-v${{ needs.detect-release.outputs.version }}.zip
             artifacts/iptv-player-windows-installer/IPTV-Player-Setup-v${{ needs.detect-release.outputs.version }}.exe
             artifacts/iptv-player-linux-deb/iptv-player.deb
             artifacts/iptv-player-linux-appimage/IPTV-Player-x86_64.AppImage

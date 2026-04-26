@@ -35,9 +35,9 @@ class PlayerView(QWidget):
         layout.setSpacing(0)
 
         # Header
-        header = QWidget()
-        header.setObjectName("viewHeader")
-        h_layout = QHBoxLayout(header)
+        self._header = QWidget()
+        self._header.setObjectName("viewHeader")
+        h_layout = QHBoxLayout(self._header)
         h_layout.setContentsMargins(16, 10, 16, 10)
 
         back_btn = QPushButton("  Back")
@@ -76,11 +76,29 @@ class PlayerView(QWidget):
         next_btn.clicked.connect(self._on_next)
         h_layout.addWidget(next_btn)
 
-        layout.addWidget(header)
+        layout.addWidget(self._header)
 
         # Video player
         self._video_player = VideoPlayerComponent(self)
+        self._video_player.toggle_fullscreen_requested.connect(self._toggle_fullscreen)
+        self._video_player.theater_changed.connect(self._on_theater_changed)
         layout.addWidget(self._video_player, 1)
+
+    def _toggle_fullscreen(self):
+        win = self.window()
+        entering = not win.isFullScreen()
+        if entering:
+            win.showFullScreen()
+        else:
+            win.showNormal()
+        self.set_theater_mode(entering)
+
+    def _on_theater_changed(self, active: bool):
+        self._header.setVisible(not active)
+
+    def set_theater_mode(self, active: bool):
+        self._video_player.set_theater_mode(active)
+        self._header.setVisible(not active)
 
     def refresh(self):
         current = self._state.get_current_channel()

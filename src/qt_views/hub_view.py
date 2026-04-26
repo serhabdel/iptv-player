@@ -2,7 +2,7 @@
 from typing import Optional, Callable, List
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGridLayout, QScrollArea, QSizePolicy,
+    QGridLayout, QScrollArea, QSizePolicy, QProgressBar,
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QFont, QPixmap
@@ -111,6 +111,128 @@ class ResponsiveCardGrid(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reflow()
+
+
+class ContinueWatchingCard(QWidget):
+    """Rich card for Continue Watching with thumbnail, progress bar, and metadata."""
+
+    clicked = None  # assigned externally
+
+    _TYPE_GRADIENTS = {
+        "movie":  "qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #be185d,stop:1 #ec4899)",
+        "series": "qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #0d9488,stop:1 #14b8a6)",
+        "live":   "qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #4f46e5,stop:1 #a855f7)",
+    }
+    _TYPE_ICONS = {
+        "movie":  "mdi.movie-open",
+        "series": "mdi.television-box",
+        "live":   "mdi.broadcast",
+    }
+
+    def __init__(self, item: dict, parent=None):
+        super().__init__(parent)
+        self.item = item
+        self.setFixedSize(200, 260)
+        self.setCursor(Qt.PointingHandCursor)
+
+        content_type = item.get("content_type", "movie")
+        grad = self._TYPE_GRADIENTS.get(content_type, self._TYPE_GRADIENTS["movie"])
+        icon_name = self._TYPE_ICONS.get(content_type, self._TYPE_ICONS["movie"])
+        progress = item.get("progress", 0)
+        name = item.get("name", "Unknown")
+        group = item.get("group", "")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Thumbnail area ──
+        thumb = QWidget()
+        thumb.setFixedHeight(140)
+        thumb.setStyleSheet(f"""
+            QWidget {{
+                background: {grad};
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }}
+        """)
+        t_layout = QVBoxLayout(thumb)
+        t_layout.setAlignment(Qt.AlignCenter)
+
+        play_icon = QLabel()
+        play_icon.setPixmap(qta.icon("mdi.play-circle", color="rgba(255,255,255,0.9)").pixmap(QSize(48, 48)))
+        play_icon.setAlignment(Qt.AlignCenter)
+        t_layout.addWidget(play_icon)
+
+        # Type badge
+        if group:
+            badge = QLabel(group[:18])
+            badge.setStyleSheet(
+                "background: rgba(0,0,0,0.45); color: white; padding: 2px 8px;"
+                "border-radius: 6px; font-size: 10px; font-weight: 600;"
+            )
+            badge.setAlignment(Qt.AlignCenter)
+            t_layout.addWidget(badge, alignment=Qt.AlignCenter)
+
+        layout.addWidget(thumb)
+
+        # ── Info area ──
+        info = QWidget()
+        info.setStyleSheet("""
+            QWidget {
+                background: #1e1e2e;
+                border-bottom-left-radius: 14px;
+                border-bottom-right-radius: 14px;
+            }
+        """)
+        i_layout = QVBoxLayout(info)
+        i_layout.setContentsMargins(12, 10, 12, 12)
+        i_layout.setSpacing(6)
+
+        title = QLabel(name[:22] + "…" if len(name) > 22 else name)
+        title.setStyleSheet("font-size: 13px; font-weight: 700; color: #e2e8f0;")
+        title.setWordWrap(True)
+        i_layout.addWidget(title)
+
+        # Progress bar
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(int(progress))
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.setStyleSheet("""
+            QProgressBar {
+                background: #334155;
+                border-radius: 2px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #38bdf8, stop:1 #a855f7);
+                border-radius: 2px;
+            }
+        """)
+        i_layout.addWidget(self._progress_bar)
+
+        resume = QLabel(f"Resume at {int(progress)}%")
+        resume.setStyleSheet("font-size: 11px; color: #94a3b8;")
+        i_layout.addWidget(resume)
+
+        layout.addWidget(info)
+
+        # Hover border effect via parent stylesheet
+        self.setStyleSheet("""
+            ContinueWatchingCard {
+                background: transparent;
+                border-radius: 14px;
+            }
+            ContinueWatchingCard:hover {
+                border: 2px solid #a855f7;
+            }
+        """)
+
+    def mousePressEvent(self, event):
+        if self.clicked:
+            self.clicked(self.item)
 
 
 class HubView(QWidget):
@@ -269,14 +391,8 @@ class HubView(QWidget):
         self._recent_list.setVisible(True)
 
         for item in recent:
-            card = QPushButton(f"  {item.get('name', 'Unknown')}")
-            card.setIcon(qta.icon("mdi.play-circle-outline", color="#a855f7"))
-            card.setIconSize(QSize(18, 18))
-            card.setObjectName("recentCard")
-            card.setFixedWidth(210)
-            progress = item.get("progress", 0)
-            card.setToolTip(f"Resume from {self._format_time(item.get('position_ms', 0))} ({progress:.0f}%)")
-            card.clicked.connect(lambda checked, it=item: self._play_recent(it))
+            card = ContinueWatchingCard(item)
+            card.clicked = self._play_recent
             # Insert before the final stretch
             self._recent_layout.insertWidget(self._recent_layout.count() - 1, card)
 
@@ -290,14 +406,3 @@ class HubView(QWidget):
                 content_type=item.get("content_type", "movie"),
             )
             self._on_play_channel(ch)
-
-    @staticmethod
-    def _format_time(ms: int) -> str:
-        s = ms // 1000
-        m = s // 60
-        h = m // 60
-        m %= 60
-        s %= 60
-        if h:
-            return f"{h}:{m:02d}:{s:02d}"
-        return f"{m}:{s:02d}"
